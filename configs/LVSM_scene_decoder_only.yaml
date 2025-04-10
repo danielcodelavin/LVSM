@@ -13,7 +13,7 @@ model:
   transformer:
     d: 768
     d_head: 64
-    n_layer: 24
+    n_layer: 6
     special_init: true
     depth_init: true
     use_qk_norm: true
@@ -21,7 +21,7 @@ model:
 training:
   amp_dtype: bf16
   api_key_path: ./configs/api_keys.yaml
-  batch_size_per_gpu: 8
+  batch_size_per_gpu: 32
   beta1: 0.9
   beta2: 0.95
   allowed_gradnorm_factor: 5
@@ -30,8 +30,8 @@ training:
   checkpoint_dir: ./experiments/checkpoints/LVSM_scene_decoder_only
   checkpoint_every: 2000
   dataset_name: data.dataset_scene.Dataset
-  dataset_path: ./preprocessed_data/train/full_list.txt
-  grad_accum_steps: 1
+  dataset_path: ./datasets/re10k/train/full_list.txt
+  grad_accum_steps: 2
   grad_checkpoint_every: 1
   grad_clip_norm: 1.0
 
@@ -40,7 +40,7 @@ training:
   perceptual_loss_weight: 0.5
 
   lr: 0.0004
-  train_steps: 100000
+  train_steps: 1000000
 
 
   num_input_views: 2

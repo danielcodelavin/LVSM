@@ -197,7 +197,7 @@ if __name__ == "__main__":
     output_dir = os.path.join(args.output_dir, cur_mode)
     # Process test data only
     logging.info("Starting test data processing...")
-    # process_directory(input_dir, output_dir, chunk_size=args.chunk_size, num_processes=args.num_processes)  
+    process_directory(input_dir, output_dir, chunk_size=args.chunk_size, num_processes=args.num_processes)  
     logging.info("Processing completed!") 
     search_list_dir = os.path.join(args.output_dir, cur_mode, 'metadata')
     save_dir = os.path.join(args.output_dir, cur_mode)
