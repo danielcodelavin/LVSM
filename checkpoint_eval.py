@@ -23,7 +23,7 @@ RESULTS_BASE_DIR = "/home/stud/lavingal/storage/slurm/lavingal/LVSM/evaluation_l
 CONFIG_FILE = "configs/LVSM_scene_decoder_only.yaml"                                                 # Config file path (relative to project root)
 DATASET_PATH = "/home/stud/lavingal/storage/slurm/lavingal/LVSM/datasets/re10k/test/full_list.txt"       # Dataset file
 METRICS_FILE = os.path.join(RESULTS_BASE_DIR, "checkpoint_metrics.csv")                                # File to save all metrics
-SLEEP_TIME = 6                                                                                       # Time (in seconds) between scans
+SLEEP_TIME = 60                                                                                      # Time (in seconds) between scans
 NUM_GPUS = 1                                                                                         # Number of GPUs to use for evaluation
 
 def extract_checkpoint_epoch(checkpoint_path):
@@ -97,7 +97,7 @@ def run_inference(checkpoint_path, epoch, checkpoint_output_dir, config_file, da
         inference_script,
         f"--config={config_file_absolute}",
         f"training.dataset_path={dataset_path}",
-        "training.batch_size_per_gpu=4",
+        "training.batch_size_per_gpu=16",
         "training.target_has_input=false",
         "training.num_views=5",
         "training.square_crop=true",
