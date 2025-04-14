@@ -50,8 +50,6 @@ dataloader_iter = iter(dataloader)
 
 dist.barrier()
 
-
-
 # Import model and load checkpoint
 module, class_name = config.model.class_name.rsplit(".", 1)
 LVSM = importlib.import_module(module).__dict__[class_name]
@@ -80,11 +78,52 @@ with torch.no_grad(), torch.autocast(
     dtype=amp_dtype_mapping[config.training.amp_dtype],
 ):
     for batch in dataloader:
-        batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in batch.items()}
+        batch = {k: v.to(ddp_info.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+        
+        # Get model predictions
         result = model(batch)
-        if config.inference.get("render_video", False):
-            result= model.module.render_video(result, **config.inference.render_video_config)
+        
+        # For diffusion models, we need to render images using the diffusion process
+        if config.model.get("use_diffusion", False):
+            # Use render_video with a single frame to get the final rendered image
+            render_config = {
+                "traj_type": "target",
+                "num_frames": 1,
+                "loop_video": False,
+                "order_poses": False
+            }
+            result = model.module.render_video(result, **render_config)
+            
+            # Ensure result has required properties for metric computation
+            if not hasattr(result, 'render') or result.render is None:
+                # Extract the rendered image from video_rendering
+                result.render = result.video_rendering.squeeze(1)  # Remove frame dimension
+        
+        # Compute metrics if requested
+        if config.inference.get("compute_metrics", False):
+            # Create a dictionary for metrics if it doesn't exist
+            if not hasattr(result, 'metrics') or result.metrics is None:
+                result.metrics = {}
+                
+            # Compute PSNR and LPIPS if we have ground truth
+            if hasattr(result.target, 'image') and result.target.image is not None and result.render is not None:
+                # Use the loss computer to calculate metrics
+                with torch.no_grad():
+                    metrics = model.module.loss_computer(
+                        rendering=result.render, 
+                        target=result.target.image,
+                        predicted_noise=None,
+                        noise=None
+                    )
+                    
+                    # Copy metrics to result
+                    for k, v in metrics.items():
+                        if k != 'loss':  # Skip the loss value itself
+                            result.metrics[k] = v
+        
+        # Export results including metrics
         export_results(result, config.inference_out_dir, compute_metrics=config.inference.get("compute_metrics"))
+    
     torch.cuda.empty_cache()
 
 

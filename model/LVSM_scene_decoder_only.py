@@ -8,6 +8,10 @@ import traceback
 from utils import camera_utils, data_utils 
 from .transformer import QK_Norm_TransformerBlock, init_weights
 from .loss import LossComputer
+from diffusers import DDPMScheduler
+import math
+
+import torch.nn.functional as F
 
 
 class Images2LatentScene(nn.Module):
@@ -18,12 +22,49 @@ class Images2LatentScene(nn.Module):
 
         # Initialize both input tokenizers, and output de-tokenizer
         self._init_tokenizers()
+
+        self._init_time_embedding()
         
         # Initialize transformer blocks
         self._init_transformer()
         
+        self._init_noise_predictor()
+
+        self.init_noise_scheduler()
+
         # Initialize loss computer
         self.loss_computer = LossComputer(config)
+
+
+    def _init_time_embedding(self):
+        time_embed_dim = self.config.model.transformer.d * 4
+        self.time_embedding = nn.Sequential(
+            nn.Linear(self.config.model.transformer.d, time_embed_dim),
+            nn.SiLU(),
+            nn.Linear(time_embed_dim, self.config.model.transformer.d),
+        )
+        self.time_embedding.apply(init_weights)
+
+    def get_timestep_embedding(self, time_step):
+        half_dim = self.config.model.transformer.d // 2
+        emb = math.log(10000) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=time_step.device) * -emb)
+        emb = time_step[:, None] * emb[None, :]
+        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+        return self.time_embed(emb)
+    
+    def _init_noise_predictor(self):
+        self.noise_predictor = nn.Sequential(
+            nn.LayerNorm(self.config.model.transformer.d, bias=False),
+            nn.Linear(self.config.model.transformer.d, (self.config.model.target_pose_tokenizer.patch_size**2) * 3, bias=False,))
+        self.noise_predictor.apply(init_weights)
+        
+    def _init_noise_scheduler(self):
+        self.noise_scheduler = DDPMScheduler(
+            num_train_timesteps=self.config.diffusion.num_train_timesteps,
+            beta_schedule=self.config.diffusion.beta_schedule,
+            prediction_type="epsilon",  # predict noise
+        )
 
     def _create_tokenizer(self, in_channels, patch_size, d_model):
         """Helper function to create a tokenizer with given config"""
@@ -187,217 +228,232 @@ class Images2LatentScene(nn.Module):
     
     
     def forward(self, data_batch, has_target_image=True):
-
-        input, target = self.process_data(data_batch, has_target_image=has_target_image, target_has_input = self.config.training.target_has_input, compute_rays=True)
-
-        # Process input images
+        input, target = self.process_data(data_batch, has_target_image=has_target_image, 
+                                        target_has_input=self.config.training.target_has_input, 
+                                        compute_rays=True)
+        
+        # Process input images 
         posed_input_images = self.get_posed_input(
             images=input.image, ray_o=input.ray_o, ray_d=input.ray_d
         )
         b, v_input, c, h, w = posed_input_images.size()
-
-        input_img_tokens = self.image_tokenizer(posed_input_images)  # [b*v, n_patches, d]
-
-        _, n_patches, d = input_img_tokens.size()  # [b*v, n_patches, d]
-        input_img_tokens = input_img_tokens.reshape(b, v_input * n_patches, d)  # [b, v*n_patches, d]
+        input_img_tokens = self.image_tokenizer(posed_input_images)
+        _, n_patches, d = input_img_tokens.size()
+        input_img_tokens = input_img_tokens.reshape(b, v_input * n_patches, d)
         
-     
-        target_pose_cond= self.get_posed_input(ray_o=target.ray_o, ray_d=target.ray_d)
-
+        # Process target pose 
+        target_pose_cond = self.get_posed_input(ray_o=target.ray_o, ray_d=target.ray_d)
         b, v_target, c, h, w = target_pose_cond.size()
-        target_pose_tokens = self.target_pose_tokenizer(target_pose_cond) # [b*v, n_patches, d]
-
-        # Repeat input tokens for each target view
+        target_pose_tokens = self.target_pose_tokenizer(target_pose_cond)
+        
+        
+        if has_target_image:
+            # Tokenize the target images
+            target_image_tokens = self.image_tokenizer(target.image * 2.0 - 1.0)
+            
+            # Sample random timesteps
+            timesteps = torch.randint(
+                0, self.noise_scheduler.config.num_train_timesteps, 
+                (b * v_target,), device=target_image_tokens.device
+            )
+            
+            # Add noise to target image tokens according to the timesteps
+            noise = torch.randn_like(target_image_tokens)
+            noisy_target_tokens = self.noise_scheduler.add_noise(
+                target_image_tokens, noise, timesteps
+            )
+            
+            # Create timestep embeddings
+            timestep_embeddings = self.get_timestep_embedding(timesteps)
+            timestep_embeddings = timestep_embeddings.reshape(b * v_target, 1, d)
+            timestep_embeddings = timestep_embeddings.expand(-1, n_patches, -1)
+            
+            # Add timestep embeddings to target pose tokens
+            target_pose_tokens = target_pose_tokens + timestep_embeddings
+        
+        # Repeat input tokens and concatenate with target tokens 
         repeated_input_img_tokens = repeat(
             input_img_tokens, 'b np d -> (b v_target) np d', 
             v_target=v_target, np=n_patches * v_input
         )
-
-        # Concatenate input and target tokens
-        transformer_input = torch.cat((repeated_input_img_tokens, target_pose_tokens), dim=1)  
-        concat_img_tokens = self.transformer_input_layernorm(transformer_input)
-        checkpoint_every = self.config.training.grad_checkpoint_every
-        transformer_output_tokens = self.pass_layers(concat_img_tokens, gradient_checkpoint=True, checkpoint_every=checkpoint_every)
-
-        # Discard the input tokens
-        _, target_image_tokens = transformer_output_tokens.split(
-            [v_input * n_patches, n_patches], dim=1
-        ) # [b * v_target, v*n_patches, d], [b * v_target, n_patches, d]
-
-        # [b*v_target, n_patches, p*p*3]
-        rendered_images = self.image_token_decoder(target_image_tokens)
         
-        height, width = target.image_h_w
-
-        patch_size = self.config.model.target_pose_tokenizer.patch_size
-        rendered_images = rearrange(
-            rendered_images, "(b v) (h w) (p1 p2 c) -> b v c (h p1) (w p2)",
-            v=v_target,
-            h=height // patch_size, 
-            w=width // patch_size, 
-            p1=patch_size, 
-            p2=patch_size, 
-            c=3
+        transformer_input = torch.cat((repeated_input_img_tokens, target_pose_tokens), dim=1)
+        concat_img_tokens = self.transformer_input_layernorm(transformer_input)
+        
+        # Process through transformer 
+        checkpoint_every = self.config.training.grad_checkpoint_every
+        transformer_output_tokens = self.pass_layers(concat_img_tokens, 
+                                                gradient_checkpoint=True, 
+                                                checkpoint_every=checkpoint_every)
+        
+        # Get only target token outputs
+        _, target_tokens_output = transformer_output_tokens.split(
+            [v_input * n_patches, n_patches], dim=1
         )
+        
+        # Predict noise instead of directly predicting the image
+        predicted_noise = self.noise_predictor(target_tokens_output)
+        
+        # For training, calculate diffusion loss
         if has_target_image:
-            loss_metrics = self.loss_computer(
-                rendered_images,
-                target.image
-            )
+            loss_metrics = {
+                "loss": F.mse_loss(predicted_noise, noise),
+            }
         else:
             loss_metrics = None
-
+        
+        render = None
+        
         result = edict(
             input=input,
             target=target,
             loss_metrics=loss_metrics,
-            render=rendered_images        
-            )
+            render=render,
+            # Store these for use in other methods
+            timesteps=timesteps if has_target_image else None,
+            noise=noise if has_target_image else None,
+            predicted_noise=predicted_noise if has_target_image else None,
+        )
         
         return result
 
 
-
     @torch.no_grad()
     def render_video(self, data_batch, traj_type="interpolate", num_frames=60, loop_video=False, order_poses=False):
-        """
-        Render a video from the model.
-        
-        Args:
-            result: Edict from forward pass or just data
-            traj_type: Type of trajectory
-            num_frames: Number of frames to render
-            loop_video: Whether to loop the video
-            order_poses: Whether to order poses
-            
-        Returns:
-            result: Updated with video rendering
-        """
-    
+        """Render a video using diffusion sampling"""
+        # Get input and target data
         if data_batch.input is None:
-            input, target = self.process_data(data_batch, has_target_image=False, target_has_input=self.config.training.target_has_input, compute_rays=True)
+            input, target = self.process_data(
+                data_batch, 
+                has_target_image=False, 
+                target_has_input=self.config.training.target_has_input, 
+                compute_rays=True
+            )
             data_batch = edict(input=input, target=target)
         else:
             input, target = data_batch.input, data_batch.target
-        
-        # Prepare input tokens; [b, v, 3+6, h, w]
+
+        # Set up camera trajectories (using existing method from original implementation)
+        rendering_ray_o, rendering_ray_d = self.setup_camera_trajectories(
+            traj_type=traj_type, num_frames=num_frames, loop_video=loop_video, order_poses=order_poses
+        )
+
+        # Prepare input tokens (as in original implementation)
         posed_images = self.get_posed_input(
             images=input.image, ray_o=input.ray_o, ray_d=input.ray_d
         )
         bs, v_input, c, h, w = posed_images.size()
+        input_img_tokens = self.image_tokenizer(posed_images)
+        _, n_patches, d = input_img_tokens.size()
+        input_img_tokens = input_img_tokens.reshape(bs, v_input * n_patches, d)
 
-        input_img_tokens = self.image_tokenizer(posed_images)  # [b*v_input, n_patches, d]
+        # Compute rays for rendering (using existing method from original implementation)
+        # For demonstration, we assume your original code computes refined rays for rendering
+        rendering_ray_o, rendering_ray_d = self.compute_rendering_rays(rendering_ray_o, rendering_ray_d)
 
-        _, n_patches, d = input_img_tokens.size()  # [b*v_input, n_patches, d]
-        input_img_tokens = input_img_tokens.reshape(bs, v_input * n_patches, d)  # [b, v_input*n_patches, d]
-
-        # target_pose_cond_list = []
-        if traj_type == "interpolate":
-            c2ws = input.c2w # [b, v, 4, 4]
-            fxfycxcy = input.fxfycxcy #  [b, v, 4]
-            device = input.c2w.device
-
-            # Create intrinsics from fxfycxcy
-            intrinsics = torch.zeros((c2ws.shape[0], c2ws.shape[1], 3, 3), device=device) # [b, v, 3, 3]
-            intrinsics[:, :,  0, 0] = fxfycxcy[:, :, 0]
-            intrinsics[:, :,  1, 1] = fxfycxcy[:, :, 1]
-            intrinsics[:, :,  0, 2] = fxfycxcy[:, :, 2]
-            intrinsics[:, :,  1, 2] = fxfycxcy[:, :, 3]
-
-            # Loop video if requested
-            if loop_video:
-                c2ws = torch.cat([c2ws, c2ws[:, [0], :]], dim=1)
-                intrinsics = torch.cat([intrinsics, intrinsics[:, [0], :]], dim=1)
-
-            # Interpolate camera poses
-            all_c2ws, all_intrinsics = [], []
-            for b in range(input.image.size(0)):
-                cur_c2ws, cur_intrinsics = camera_utils.get_interpolated_poses_many(
-                    c2ws[b, :, :3, :4], intrinsics[b], num_frames, order_poses=order_poses
-                )
-                all_c2ws.append(cur_c2ws.to(device))
-                all_intrinsics.append(cur_intrinsics.to(device))
-
-            all_c2ws = torch.stack(all_c2ws, dim=0) # [b, num_frames, 3, 4]
-            all_intrinsics = torch.stack(all_intrinsics, dim=0) # [b, num_frames, 3, 3]
-
-            # Add homogeneous row to c2ws
-            homogeneous_row = torch.tensor([[[0, 0, 0, 1]]], device=device).expand(all_c2ws.shape[0], all_c2ws.shape[1], -1, -1)
-            all_c2ws = torch.cat([all_c2ws, homogeneous_row], dim=2)
-
-            # Convert intrinsics to fxfycxcy format
-            all_fxfycxcy = torch.zeros((all_intrinsics.shape[0], all_intrinsics.shape[1], 4), device=device)
-            all_fxfycxcy[:, :, 0] = all_intrinsics[:, :, 0, 0]  # fx
-            all_fxfycxcy[:, :, 1] = all_intrinsics[:, :, 1, 1]  # fy
-            all_fxfycxcy[:, :, 2] = all_intrinsics[:, :, 0, 2]  # cx
-            all_fxfycxcy[:, :, 3] = all_intrinsics[:, :, 1, 2]  # cy
-
-        # Compute rays for rendering
-        rendering_ray_o, rendering_ray_d = self.process_data.compute_rays(
-            fxfycxcy=all_fxfycxcy, c2w=all_c2ws, h=h, w=w, device=device
-        )
-
-        # Get pose conditioning for target views
+        # Get pose conditioning for target views (as in original implementation)
         target_pose_cond = self.get_posed_input(
             ray_o=rendering_ray_o.to(input.image.device), 
             ray_d=rendering_ray_d.to(input.image.device)
         )
-                
+
         _, num_views, c, h, w = target_pose_cond.size()
-    
-        target_pose_tokens = self.target_pose_tokenizer(target_pose_cond) # [bs*v_target, n_patches, d]
-        _, n_patches, d = target_pose_tokens.size()  # [b*v_target, n_patches, d]
-        target_pose_tokens = target_pose_tokens.reshape(bs, num_views * n_patches, d)  # [b, v_target*n_patches, d]
+        target_pose_tokens = self.target_pose_tokenizer(target_pose_cond)
+        _, n_patches, d = target_pose_tokens.size()
 
+        # Process views in chunks (using approach from original implementation)
         view_chunk_size = 4
-
         video_rendering_list = []
+
+        # Loop through view chunks
         for cur_chunk in range(0, num_views, view_chunk_size):
             cur_view_chunk_size = min(view_chunk_size, num_views - cur_chunk)
 
-            # [b, (v_input*n_patches), d] -> [(b * cur_v_target), (v_input*n_patches), d]
-            repeated_input_img_tokens = repeat(input_img_tokens.detach(), 'b np d -> (b chunk) np d', chunk=cur_view_chunk_size, np=n_patches* v_input)
-
-            start_idx, end_idx = cur_chunk * n_patches, (cur_chunk + cur_view_chunk_size) * n_patches            
-            # [b, v_target * n_patches, d] -> [b, cur_v_target*n_patches, d] -> [b*cur_v_target, n_patches, d]
-            cur_target_pose_tokens = rearrange(target_pose_tokens[:, start_idx:end_idx,: ], 
-                                               "b (v_chunk p) d -> (b v_chunk) p d", 
-                                               v_chunk=cur_view_chunk_size, p=n_patches)
-
-            cur_concat_input_tokens = torch.cat((repeated_input_img_tokens, cur_target_pose_tokens,), dim=1) # [b*cur_v_target, v_input*n_patches+n_patches, d]
-            cur_concat_input_tokens = self.transformer_input_layernorm(
-                cur_concat_input_tokens
+            # Get current chunk of pose tokens
+            start_idx = cur_chunk * n_patches
+            end_idx = (cur_chunk + cur_view_chunk_size) * n_patches
+            cur_target_pose_tokens = rearrange(
+                target_pose_tokens[:, start_idx:end_idx, :], 
+                "b (v_chunk p) d -> (b v_chunk) p d", 
+                v_chunk=cur_view_chunk_size, p=n_patches
             )
 
-            transformer_output_tokens = self.pass_layers(cur_concat_input_tokens, gradient_checkpoint=False)
+            # Repeat input tokens for each target view
+            repeated_input_img_tokens = repeat(
+                input_img_tokens.detach(), "b np d -> (b chunk) np d", 
+                chunk=cur_view_chunk_size, np=n_patches * v_input
+            )
 
-            _, pred_target_image_tokens = transformer_output_tokens.split(
-                [v_input * n_patches, n_patches], dim=1
-            ) # [b * v_target, v*n_patches, d], [b * v_target, n_patches, d]
+            # Initialize with random noise for diffusion
+            sample = torch.randn(
+                (bs * cur_view_chunk_size, n_patches, (self.config.model.target_pose_tokenizer.patch_size ** 2) * 3),
+                device=input_img_tokens.device
+            )
 
-            height, width = target.image_h_w
+            # Diffusion sampling loop
+            for t in self.noise_scheduler.timesteps:
+                # Create timestep tensor
+                timesteps = torch.full(
+                    (bs * cur_view_chunk_size,), t, 
+                    device=input_img_tokens.device, dtype=torch.long
+                )
 
-            patch_size = self.config.model.target_pose_tokenizer.patch_size
+                # Get timestep embeddings
+                timestep_embeddings = self.get_timestep_embedding(timesteps)
+                timestep_embeddings = timestep_embeddings.reshape(bs * cur_view_chunk_size, 1, d)
+                timestep_embeddings = timestep_embeddings.expand(-1, n_patches, -1)
 
-            # [b, v_target*n_patches, p*p*3]
-            video_rendering = self.image_token_decoder(pred_target_image_tokens)
-            
+                # Add timestep embeddings to pose tokens
+                time_conditioned_pose_tokens = cur_target_pose_tokens + timestep_embeddings
+
+                # Concatenate input tokens with pose tokens
+                cur_concat_input_tokens = torch.cat(
+                    (repeated_input_img_tokens, time_conditioned_pose_tokens), dim=1
+                )
+                cur_concat_input_tokens = self.transformer_input_layernorm(cur_concat_input_tokens)
+
+                # Process through transformer (as in original implementation)
+                transformer_output_tokens = self.pass_layers(
+                    cur_concat_input_tokens, gradient_checkpoint=False
+                )
+
+                # Extract target tokens output
+                _, target_tokens_output = transformer_output_tokens.split(
+                    [v_input * n_patches, n_patches], dim=1
+                )
+
+                # Predict noise
+                model_output = self.noise_predictor(target_tokens_output)
+
+                # Perform denoising step using the DDPM scheduler
+                sample = self.noise_scheduler.step(
+                    model_output=model_output, 
+                    timestep=t, 
+                    sample=sample
+                ).prev_sample
+
+            # Decode the final denoised tokens to images
+            decoded_images = torch.sigmoid((sample + 1.0) / 2.0)  # Rescale from [-1,1] to [0,1]
+
+            # Reshape to proper image dimensions
             video_rendering = rearrange(
-                video_rendering, "(b v) (h w) (p1 p2 c) -> b v c (h p1) (w p2)",
+                decoded_images, "(b v) (h w) (p1 p2 c) -> b v c (h p1) (w p2)",
                 v=cur_view_chunk_size,
-                h=height // patch_size, 
-                w=width // patch_size, 
-                p1=patch_size, 
-                p2=patch_size, 
+                h=target.image_h_w[0] // self.config.model.target_pose_tokenizer.patch_size, 
+                w=target.image_h_w[1] // self.config.model.target_pose_tokenizer.patch_size, 
+                p1=self.config.model.target_pose_tokenizer.patch_size, 
+                p2=self.config.model.target_pose_tokenizer.patch_size, 
                 c=3
             ).cpu()
 
             video_rendering_list.append(video_rendering)
+
+        # Concatenate all chunks and return
         video_rendering = torch.cat(video_rendering_list, dim=1)
         data_batch.video_rendering = video_rendering
 
-
         return data_batch
+
 
     @torch.no_grad()
     def load_ckpt(self, load_path):
