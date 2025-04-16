@@ -27,10 +27,10 @@ training:
   allowed_gradnorm_factor: 5
   center_crop: true
   scene_scale_factor: 1.35
-  checkpoint_dir: ./experiments/checkpoints/LVSM_scene_decoder_only
+  checkpoint_dir: ../experiments/checkpoints/LVSM_scene_decoder_only
   checkpoint_every: 2000
   dataset_name: data.dataset_scene.Dataset
-  dataset_path: ./datasets/re10k/train/full_list.txt
+  dataset_path: ../datasets/re10k/train/full_list.txt
   grad_accum_steps: 2
   grad_checkpoint_every: 1
   grad_clip_norm: 1.0
