@@ -135,7 +135,6 @@ while cur_train_step <= total_train_steps:
         device_type="cuda",
         dtype=amp_dtype_mapping[config.training.amp_dtype],
     ):
-       
         ret_dict = model(batch)
 
     update_grads = (cur_train_step + 1) % grad_accum_steps == 0 or cur_train_step == total_train_steps

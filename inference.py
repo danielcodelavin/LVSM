@@ -80,30 +80,34 @@ with torch.no_grad(), torch.autocast(
     for batch in dataloader:
         batch = {k: v.to(ddp_info.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
         
-        # Get model predictions
-        result = model(batch)
-        
-        # For diffusion models, we need to render images using the diffusion process
-        if config.model.get("use_diffusion", False):
-            # Configure rendering parameters
-            render_config = {
-                "traj_type": "target",
-                "num_frames": 1,
-                "loop_video": False,
-                "order_poses": False,
-                "num_steps": config.inference.get("diffusion_steps", 50),  # Number of denoising steps
-                "cfg_scale": config.inference.get("cfg_scale", 1.0),       # Classifier-free guidance scale
-                "eta": config.inference.get("eta", 0.0)                   # Controls stochasticity
-            }
+      
+        if not config.inference.get("render_video", False):
+            result = model(batch)
             
             
-            result = model.module.render_video(result, **render_config)
+            if config.model.diffusion.get("use_diffusion", False) and config.inference.get("use_sampling", True):
+             
+                sampling_config = {
+                    "num_inference_steps": config.inference.get("diffusion_steps", 50),
+                    "eta": config.inference.get("eta", 0.0)  # Controls stochasticity
+                }
+                
+                # Run diffusion sampling through model's built-in method
+                result = model.module.sample_images(result, **sampling_config)
+        else:
+            # For video rendering
+            render_config = config.inference.get("render_video_config", {})
             
-            # Extract the rendered image from video_rendering
-            if hasattr(result, 'video_rendering') and result.video_rendering is not None:
-                result.render = result.video_rendering.squeeze(1)  # Remove frame dimension
+            # Add diffusion-specific parameters if needed
+            if config.model.diffusion.get("use_diffusion", False):
+                render_config.update({
+                    "num_inference_steps": config.inference.get("diffusion_steps", 50),
+                    "eta": config.inference.get("eta", 0.0)
+                })
+                
+            result = model.module.render_video(batch, **render_config)
         
-        
+      
         if config.inference.get("compute_metrics", False):
             # Initialize metrics dictionary if not present
             if not hasattr(result, 'metrics') or result.metrics is None:
@@ -115,9 +119,7 @@ with torch.no_grad(), torch.autocast(
                 with torch.no_grad():
                     metrics = model.module.loss_computer(
                         rendering=result.render, 
-                        target=result.target.image,
-                        predicted_noise=None,
-                        noise=None
+                        target=result.target.image
                     )
                     
                     # Copy metrics to result
@@ -125,8 +127,8 @@ with torch.no_grad(), torch.autocast(
                         if k != 'loss':  # Skip the loss value itself
                             result.metrics[k] = v
         
-        # Export results including metrics
-        export_results(result, config.inference_out_dir, compute_metrics=config.inference.get("compute_metrics"))
+        # Export results
+        export_results(result, config.inference_out_dir, compute_metrics=config.inference.get("compute_metrics", False))
     
     torch.cuda.empty_cache()
 

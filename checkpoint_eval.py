@@ -129,7 +129,7 @@ def run_inference(checkpoint_path, epoch, checkpoint_output_dir, config_file, da
     # Generate a unique port number to avoid conflicts
     port = 29500 + (epoch % 1000)
     
-    # Prepare the command with specific parameters for diffusion-based rendering
+    # Prepare the command with diffusion model specific parameters
     cmd = [
         "torchrun",
         f"--nproc_per_node={num_gpus}",
@@ -148,11 +148,22 @@ def run_inference(checkpoint_path, epoch, checkpoint_output_dir, config_file, da
         "training.num_target_views=3",
         "inference.if_inference=true",
         "inference.compute_metrics=true",
-        "inference.render_video=true",           # Enable video rendering
+        "inference.render_video=true",
         "inference.generate_website=false",
-        "inference.diffusion_steps=50",          # Number of diffusion sampling steps
-        "inference.cfg_scale=1.0",               # Classifier-free guidance scale
-        "inference.eta=0.0",                     # Controls stochasticity
+        
+        # Diffusion model parameters
+        "model.diffusion.use_diffusion=true",
+        "inference.use_sampling=true",
+        "inference.diffusion_steps=50",
+        "inference.eta=0.0",
+        
+        # Render video config
+        "inference.render_video_config.traj_type=target",
+        "inference.render_video_config.num_frames=1",
+        "inference.render_video_config.loop_video=false",
+        "inference.render_video_config.order_poses=false",
+        "inference.render_video_config.num_inference_steps=50",  # Same as diffusion_steps
+        
         f"inference_out_dir={checkpoint_output_dir}",
         f"training.checkpoint_dir={checkpoint_path}"
     ]
@@ -185,10 +196,13 @@ def collect_metrics_from_subfolders(checkpoint_output_dir):
         logger.error(f"No sample subfolders found in {checkpoint_output_dir}")
         return None
 
-    psnr_values = []
-    ssim_values = []
-    lpips_values = []
-    perceptual_loss_values = []
+    metrics_collection = {
+        'psnr': [],
+        'ssim': [],
+        'lpips': [],
+        'perceptual_loss': [],
+        'diffusion_loss': []  # Added diffusion loss
+    }
 
     for subfolder in subfolders:
         json_path = os.path.join(subfolder, "metrics.json")
@@ -200,37 +214,34 @@ def collect_metrics_from_subfolders(checkpoint_output_dir):
             try:
                 data = json.load(f)
                 summary = data.get("summary", {})
-                psnr_values.append(summary.get("psnr", 0))
-                ssim_values.append(summary.get("ssim", 0))
-                lpips_values.append(summary.get("lpips", 0))
                 
-                # Also collect perceptual loss if available
-                if "perceptual_loss" in summary:
-                    perceptual_loss_values.append(summary.get("perceptual_loss", 0))
+                # Collect standard metrics
+                for metric in ['psnr', 'ssim', 'lpips', 'perceptual_loss']:
+                    if metric in summary:
+                        metrics_collection[metric].append(summary[metric])
+                
+                # Collect diffusion-specific metrics
+                if 'diffusion_loss' in summary:
+                    metrics_collection['diffusion_loss'].append(summary['diffusion_loss'])
+                
             except json.JSONDecodeError as e:
                 logger.error(f"Error reading metrics from {json_path}: {e}")
 
-    if not psnr_values:
+    # Check if we found any metrics
+    if not any(metrics_collection.values()):
         logger.error("No valid metrics found in any subfolder")
         return None
     
-    avg_metrics = {
-        "PSNR": sum(psnr_values) / len(psnr_values),
-        "SSIM": sum(ssim_values) / len(ssim_values),
-        "LPIPS": sum(lpips_values) / len(lpips_values)
-    }
-    
-    # Add perceptual loss if available
-    if perceptual_loss_values:
-        avg_metrics["Perceptual_Loss"] = sum(perceptual_loss_values) / len(perceptual_loss_values)
+    # Calculate average for each available metric
+    avg_metrics = {}
+    for metric, values in metrics_collection.items():
+        if values:  # Only calculate average if we have values
+            avg_metrics[metric.upper()] = sum(values) / len(values)
     
     # Write metrics to summary file
     with open(os.path.join(checkpoint_output_dir, "evaluation_summary.txt"), "w") as f:
-        f.write(f"PSNR: {avg_metrics['PSNR']:.6f}\n")
-        f.write(f"SSIM: {avg_metrics['SSIM']:.6f}\n")
-        f.write(f"LPIPS: {avg_metrics['LPIPS']:.6f}\n")
-        if "Perceptual_Loss" in avg_metrics:
-            f.write(f"Perceptual_Loss: {avg_metrics['Perceptual_Loss']:.6f}\n")
+        for metric, value in avg_metrics.items():
+            f.write(f"{metric}: {value:.6f}\n")
     
     return avg_metrics
 
@@ -243,33 +254,61 @@ def save_metrics_to_file(metrics_file, epoch, metrics):
         epoch: Epoch number
         metrics: Dictionary of metrics
     """
-    # Create header based on available metrics
-    header_items = ["Epoch", "PSNR", "SSIM", "LPIPS"]
-    if "Perceptual_Loss" in metrics:
-        header_items.append("Perceptual_Loss")
-    header = ",".join(header_items) + "\n"
+    # Define all possible metrics (standard + diffusion-specific)
+    all_possible_metrics = ["Epoch", "PSNR", "SSIM", "LPIPS", "PERCEPTUAL_LOSS", "DIFFUSION_LOSS"]
+    
+    # Filter to include only metrics we actually have
+    available_metrics = ["Epoch"] + [m for m in all_possible_metrics[1:] if m in metrics]
+    
+    # Create header
+    header = ",".join(available_metrics) + "\n"
     
     # Create line with metric values
     line_items = [f"{epoch}"]
-    line_items.append(f"{metrics.get('PSNR', 'N/A'):.6f}")
-    line_items.append(f"{metrics.get('SSIM', 'N/A'):.6f}")
-    line_items.append(f"{metrics.get('LPIPS', 'N/A'):.6f}")
-    if "Perceptual_Loss" in metrics:
-        line_items.append(f"{metrics.get('Perceptual_Loss', 'N/A'):.6f}")
+    for metric in available_metrics[1:]:  # Skip "Epoch"
+        line_items.append(f"{metrics.get(metric, 'N/A'):.6f}")
     line = ",".join(line_items) + "\n"
     
     # Write to file
     if not os.path.exists(metrics_file):
         with open(metrics_file, 'w') as f:
             f.write(header)
+    else:
+        # Check if we need to update the header (new metrics might be available)
+        try:
+            with open(metrics_file, 'r') as f:
+                existing_header = f.readline().strip()
+            
+            existing_metrics = existing_header.split(',')
+            new_metrics = [m for m in available_metrics if m not in existing_metrics]
+            
+            if new_metrics:
+                # Need to update header and add N/A for previous epochs
+                df = pd.read_csv(metrics_file)
+                for metric in new_metrics:
+                    df[metric] = "N/A"
+                
+                # Write updated CSV with new header
+                df.to_csv(metrics_file, index=False)
+                
+                # Now append our new data
+                with open(metrics_file, 'a') as f:
+                    f.write(line)
+                return
+        except Exception as e:
+            logger.warning(f"Error checking existing header: {e}. Will append normally.")
     
+    # Normal append
     with open(metrics_file, 'a') as f:
         f.write(line)
     
     # Log metrics
-    log_message = f"Metrics saved for epoch {epoch}: PSNR={metrics.get('PSNR', 'N/A'):.6f}, SSIM={metrics.get('SSIM', 'N/A'):.6f}, LPIPS={metrics.get('LPIPS', 'N/A'):.6f}"
-    if "Perceptual_Loss" in metrics:
-        log_message += f", Perceptual_Loss={metrics.get('Perceptual_Loss', 'N/A'):.6f}"
+    log_message = f"Metrics saved for epoch {epoch}: "
+    log_entries = []
+    for metric in available_metrics[1:]:  # Skip "Epoch"
+        if metric in metrics:
+            log_entries.append(f"{metric}={metrics[metric]:.6f}")
+    log_message += ", ".join(log_entries)
     logger.info(log_message)
 
 def process_pending_checkpoints(evaluated_checkpoints, evaluated_epochs):
