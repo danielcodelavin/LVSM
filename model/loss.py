@@ -121,12 +121,11 @@ class LossComputer(nn.Module):
         super(LossComputer, self).__init__()
         self.config = config
         
-        # Existing loss functions
+        # Basic loss functions
         self.l1_loss = nn.L1Loss()
         self.l2_loss = nn.MSELoss()
         
-        # Flag to determine if we're using diffusion mode.
-        # Since you're in the diffusion branch, this will be set via the config.
+        # Flag to determine if we're using diffusion mode
         self.use_diffusion = config.model.get("use_diffusion", False)
         
         # Initialize LPIPS metric if available
@@ -134,6 +133,12 @@ class LossComputer(nn.Module):
             self.lpips_fn = lpips.LPIPS(net='alex')
         else:
             self.lpips_fn = None
+            
+        # Initialize perceptual loss if specified in config
+        self.use_perceptual_loss = config.loss.get("use_perceptual_loss", False)
+        if self.use_perceptual_loss:
+            self.perceptual_loss = PerceptualLoss(device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+            self.perceptual_weight = config.loss.get("perceptual_weight", 1.0)
 
     def calc_psnr(self, img1, img2):
         """Calculate PSNR between two images assumed to be in [0,1]."""
@@ -150,36 +155,57 @@ class LossComputer(nn.Module):
         For the diffusion model:
             - The training loss is MSE computed between the predicted noise and the actual noise.
             - Optionally, if 'rendering' and 'target' images are provided during evaluation,
-              additional metrics (PSNR and LPIPS) are computed.
+              additional metrics (PSNR, LPIPS, and perceptual loss) are computed.
 
         For direct prediction (non-diffusion):
             - The loss is computed as L1 loss between the model output (rendering) and target image.
-            - PSNR and LPIPS metrics are also computed.
+            - PSNR, LPIPS, and perceptual loss metrics are also computed.
         """
         metrics = {}
+        
         if self.use_diffusion:
-            # Training loss for diffusion: MSE on the noise prediction.
-            loss = F.mse_loss(predicted_noise, noise)
-            metrics['loss'] = loss
-            metrics['mse_loss'] = loss.item()
+            # Training loss for diffusion: MSE on the noise prediction
+            if predicted_noise is not None and noise is not None:
+                loss = F.mse_loss(predicted_noise, noise)
+                metrics['loss'] = loss
+                metrics['mse_loss'] = loss.item()
             
-            # Optionally compute evaluation metrics if rendering and target are available.
+            # Evaluation metrics if rendering and target are available
             if rendering is not None and target is not None:
+                # PSNR
                 psnr = self.calc_psnr(rendering, target)
                 metrics['psnr'] = psnr.item() if psnr is not None else None
+                
+                # LPIPS
                 if self.lpips_fn is not None:
-                    lpips_val = self.lpips_fn(rendering, target)
+                    lpips_val = self.lpips_fn(rendering, target).mean()
                     metrics['lpips'] = lpips_val.item()
+                
+                # Perceptual loss
+                if self.use_perceptual_loss:
+                    percep_loss = self.perceptual_loss(rendering, target)
+                    metrics['perceptual_loss'] = percep_loss.item()
         else:
-            # Direct prediction loss (as in your original implementation)
+            # Direct prediction loss
             loss = self.l1_loss(rendering, target)
             metrics['loss'] = loss
             metrics['l1_loss'] = loss.item()
             
+            # PSNR
             psnr = self.calc_psnr(rendering, target)
             metrics['psnr'] = psnr.item() if psnr is not None else None
+            
+            # LPIPS
             if self.lpips_fn is not None:
-                lpips_val = self.lpips_fn(rendering, target)
+                lpips_val = self.lpips_fn(rendering, target).mean()
                 metrics['lpips'] = lpips_val.item()
+            
+            # Perceptual loss
+            if self.use_perceptual_loss:
+                percep_loss = self.perceptual_loss(rendering, target)
+                metrics['perceptual_loss'] = percep_loss.item()
+                # Add perceptual loss to the total loss if used during training
+                if self.training:
+                    metrics['loss'] = loss + self.perceptual_weight * percep_loss
             
         return edict(metrics)

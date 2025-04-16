@@ -85,27 +85,31 @@ with torch.no_grad(), torch.autocast(
         
         # For diffusion models, we need to render images using the diffusion process
         if config.model.get("use_diffusion", False):
-            # Use render_video with a single frame to get the final rendered image
+            # Configure rendering parameters
             render_config = {
                 "traj_type": "target",
                 "num_frames": 1,
                 "loop_video": False,
-                "order_poses": False
+                "order_poses": False,
+                "num_steps": config.inference.get("diffusion_steps", 50),  # Number of denoising steps
+                "cfg_scale": config.inference.get("cfg_scale", 1.0),       # Classifier-free guidance scale
+                "eta": config.inference.get("eta", 0.0)                   # Controls stochasticity
             }
+            
+            
             result = model.module.render_video(result, **render_config)
             
-            # Ensure result has required properties for metric computation
-            if not hasattr(result, 'render') or result.render is None:
-                # Extract the rendered image from video_rendering
+            # Extract the rendered image from video_rendering
+            if hasattr(result, 'video_rendering') and result.video_rendering is not None:
                 result.render = result.video_rendering.squeeze(1)  # Remove frame dimension
         
-        # Compute metrics if requested
+        
         if config.inference.get("compute_metrics", False):
-            # Create a dictionary for metrics if it doesn't exist
+            # Initialize metrics dictionary if not present
             if not hasattr(result, 'metrics') or result.metrics is None:
                 result.metrics = {}
                 
-            # Compute PSNR and LPIPS if we have ground truth
+            # Compute metrics if we have ground truth
             if hasattr(result.target, 'image') and result.target.image is not None and result.render is not None:
                 # Use the loss computer to calculate metrics
                 with torch.no_grad():
