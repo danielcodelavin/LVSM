@@ -138,3 +138,4 @@ dmypy.json
 /evaluation_live_lvsm
 /experiments
 /metric_checkpoint
+/LVSM_INFERENCE_EVAL
