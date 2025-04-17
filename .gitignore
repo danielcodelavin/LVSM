@@ -140,3 +140,4 @@ dmypy.json
 /metric_checkpoint
 /LVSM_INFERENCE_EVAL
 /sweep_vids
+/v2_sweep_vids
