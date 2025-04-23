@@ -18,8 +18,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # HARDCODED PARAMETERS
-CHECKPOINT_DIR = "/home/stud/lavingal/storage/slurm/lavingal/LVSM/experiments/checkpoints/LVSM_scene_decoder_only"  # Directory containing training checkpoints
-RESULTS_BASE_DIR = "/home/stud/lavingal/storage/slurm/lavingal/LVSM/evaluation_live_lvsm"              # Base directory for evaluation results
+CHECKPOINT_DIR = "/home/stud/lavingal/storage/slurm/lavingal/experiments/checkpoints/LVSM_scene_decoder_only"  # Directory containing training checkpoints
+RESULTS_BASE_DIR = "/home/stud/lavingal/storage/slurm/lavingal/LVSM_PROPER_BASE_EVAL"              # Base directory for evaluation results
 CONFIG_FILE = "configs/LVSM_scene_decoder_only.yaml"                                                 # Config file path (relative to project root)
 DATASET_PATH = "/home/stud/lavingal/storage/slurm/lavingal/LVSM/datasets/re10k/test/full_list.txt"       # Dataset file
 METRICS_FILE = os.path.join(RESULTS_BASE_DIR, "checkpoint_metrics.csv")                                # File to save all metrics
@@ -97,7 +97,7 @@ def run_inference(checkpoint_path, epoch, checkpoint_output_dir, config_file, da
         inference_script,
         f"--config={config_file_absolute}",
         f"training.dataset_path={dataset_path}",
-        "training.batch_size_per_gpu=16",
+        "training.batch_size_per_gpu=32",
         "training.target_has_input=false",
         "training.num_views=5",
         "training.square_crop=true",
@@ -105,7 +105,7 @@ def run_inference(checkpoint_path, epoch, checkpoint_output_dir, config_file, da
         "training.num_target_views=3",
         "inference.if_inference=true",
         "inference.compute_metrics=true",
-        "inference.render_video=false",
+        "inference.render_video=true",
         "inference.generate_website=false",
         f"inference_out_dir={checkpoint_output_dir}",
         f"training.checkpoint_dir={checkpoint_path}"
