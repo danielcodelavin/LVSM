@@ -1,5 +1,5 @@
 <div align="center">
-
+# FORKED FROM HAIANJIN 
 # LVSM: A Large View Synthesis Model with Minimal 3D Inductive Bias 
 
 ### ICLR 2025 (Oral)
