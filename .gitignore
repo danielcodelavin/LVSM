@@ -139,5 +139,8 @@ dmypy.json
 /experiments
 /metric_checkpoint
 /LVSM_INFERENCE_EVAL
+/custom/sweep_vids
 /sweep_vids
-/v2_sweep_vids
+/olddiffusionbase_live_lvsm
+/custom/objaverse_sample
+/custom/rendered_videos
