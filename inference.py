@@ -73,6 +73,7 @@ dist.barrier()
 datasampler.set_epoch(0)
 model.eval()
 
+# For video rendering, use a custom export function
 def save_video_results(result, output_dir):
     """Save video rendering results to the output directory."""
     if not hasattr(result, 'video_rendering') or result.video_rendering is None:
@@ -134,6 +135,52 @@ with torch.no_grad(), torch.autocast(
                 
             # Run video rendering
             result = model.module.render_video(batch, **render_config)
+            
+            # Compute metrics for video if requested
+            if config.inference.get("compute_metrics", False):
+                # Initialize metrics dictionary if not present
+                if not hasattr(result, 'metrics') or result.metrics is None:
+                    result.metrics = {}
+                    
+                # Check if we have ground truth data for metrics calculation
+                # For video results, we need to handle this differently
+                if hasattr(result, 'video_rendering'):
+                    # Convert the first frame of each video for metrics calculation
+                    video_frames = result.video_rendering  # [B, F, C, H, W]
+                    
+                    # Get ground truth images if available
+                    if hasattr(result, 'target') and hasattr(result.target, 'image'):
+                        target_images = result.target.image  # [B, V, C, H, W]
+                        
+                        # Use the loss computer to calculate metrics for first frame
+                        with torch.no_grad():
+                            # Select first frame from videos and prepare for metrics
+                            first_frames = video_frames[:, 0].to(ddp_info.device)  # [B, C, H, W]
+                            
+                            # Prepare target images - reshape if needed
+                            if len(target_images.shape) > 4:
+                                target_images = target_images.reshape(-1, *target_images.shape[2:])
+                            
+                            # Calculate metrics
+                            metrics = model.module.loss_computer(
+                                rendering=first_frames, 
+                                target=target_images
+                            )
+                            
+                            # Copy metrics to result
+                            for k, v in metrics.items():
+                                if k != 'loss':  # Skip the loss value itself
+                                    result.metrics[k] = v
+                            
+                            print(f"Video metrics: {', '.join([f'{k}: {v.item():.4f}' for k, v in result.metrics.items()])}")
+                            
+                            # Save metrics to file
+                            if ddp_info.is_main_process:
+                                metrics_file = os.path.join(config.inference_out_dir, 'video_metrics.txt')
+                                with open(metrics_file, 'w') as f:
+                                    for k, v in result.metrics.items():
+                                        if k != 'loss':
+                                            f.write(f"{k}: {v.item():.6f}\n")
             
             # Use custom function to save video results
             if ddp_info.is_main_process:
