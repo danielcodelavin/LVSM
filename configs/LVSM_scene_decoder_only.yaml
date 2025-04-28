@@ -21,7 +21,7 @@ model:
 training:
   amp_dtype: bf16
   api_key_path: ./configs/api_keys.yaml
-  batch_size_per_gpu: 32
+  batch_size_per_gpu: 16
   beta1: 0.9
   beta2: 0.95
   allowed_gradnorm_factor: 5
@@ -30,10 +30,11 @@ training:
   checkpoint_dir: ../experiments/checkpoints/LVSM_scene_decoder_only
   checkpoint_every: 2000
   dataset_name: data.dataset_scene.Dataset
-  dataset_path: ../datasets/re10k/train/full_list.txt
-  grad_accum_steps: 2
+  dataset_path: ./datasets/co3d_index/full_list.txt
+  grad_accum_steps: 4
   grad_checkpoint_every: 1
   grad_clip_norm: 1.0
+
 
   l2_loss_weight: 1.0
   lpips_loss_weight: 0.0
