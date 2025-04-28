@@ -1,30 +1,28 @@
 import os
 import json
 import numpy as np
-from pathlib import Path
 import argparse
-import gzip
-import pickle
 from tqdm import tqdm
+from pathlib import Path
+import sys
+from typing import List, Dict, Any
+
+from co3d.dataset.data_types import load_dataclass_jgzip, FrameAnnotation
 
 def co3d_to_lvsm_format(co3d_base_dir: str, output_dir: str, 
                         categories=None, max_frames_per_seq=None, 
                         frame_interval=1, min_frames=5):
     """
-    Convert Co3D frame annotations to LVSM format without copying images
+    Convert Co3D frame annotations to LVSM format using the official Co3D package
     
     Args:
         co3d_base_dir: Base directory of Co3D dataset
-        output_dir: Output directory for JSON files only
+        output_dir: Output directory for JSON files
         categories: List of categories to process. If None, process all available
-        max_frames_per_seq: Maximum number of frames to use per sequence (None = use all)
-        frame_interval: Sample every Nth frame (1 = use all frames)
+        max_frames_per_seq: Maximum number of frames to use per sequence
+        frame_interval: Sample every Nth frame
         min_frames: Minimum frames required per sequence
-    
-    Returns:
-        List of paths to created JSON files
     """
-    # Create output directories for metadata only
     os.makedirs(output_dir, exist_ok=True)
     metadata_dir = os.path.join(output_dir, "metadata")
     os.makedirs(metadata_dir, exist_ok=True)
@@ -49,16 +47,16 @@ def co3d_to_lvsm_format(co3d_base_dir: str, output_dir: str,
             print(f"Warning: {frame_annotations_path} not found. Skipping category.")
             continue
         
-        # Load frame annotations
+        # Load frame annotations using Co3D package
         print(f"Loading annotations from {frame_annotations_path}")
         try:
-            with gzip.open(frame_annotations_path, "rb") as f:
-                frame_annotations = pickle.load(f)
+            frame_annotations: List[FrameAnnotation] = load_dataclass_jgzip(
+                frame_annotations_path, List[FrameAnnotation]
+            )
+            print(f"Loaded {len(frame_annotations)} frame annotations")
         except Exception as e:
-            print(f"Error loading {frame_annotations_path}: {e}")
+            print(f"Error loading {frame_annotations_path}: {str(e)}")
             continue
-        
-        print(f"Loaded {len(frame_annotations)} frame annotations from {frame_annotations_path}")
         
         # Group frames by sequence
         sequences = {}
@@ -105,27 +103,28 @@ def co3d_to_lvsm_format(co3d_base_dir: str, output_dir: str,
                     print(f"Warning: Image not found at {image_path}")
                     continue
                 
-                # Compute fxfycxcy from intrinsics
+                # Get image size
                 h, w = frame.image.size
+                
+                # Convert camera parameters from Co3D format to LVSM format
+                # Get focal length and principal point
                 fl_x, fl_y = frame.viewpoint.focal_length
                 px_x, px_y = frame.viewpoint.principal_point
                 
                 # Convert from NDC format to pixel format
-                # In Co3D, focal_length is in NDC units (normalized by half image dimension)
-                # and principal_point is in [-1, 1] range
                 fx = fl_x * w / 2
                 fy = fl_y * h / 2
-                cx = (px_x + 1.0) * w / 2  # Convert from [-1,1] to [0,w]
-                cy = (px_y + 1.0) * h / 2  # Convert from [-1,1] to [0,h]
+                cx = (px_x + 1.0) * w / 2
+                cy = (px_y + 1.0) * h / 2
                 
-                # Create world-to-camera matrix
-                R = np.array(frame.viewpoint.R)
-                T = np.array(frame.viewpoint.T).reshape(3, 1)
+                # Get rotation and translation
+                R = frame.viewpoint.R  # Already in the correct format
+                T = frame.viewpoint.T  # Already in the correct format
                 
                 # Construct 4x4 w2c matrix
                 w2c = np.eye(4)
                 w2c[:3, :3] = R
-                w2c[:3, 3] = T.flatten()
+                w2c[:3, 3] = T
                 
                 frame_data = {
                     "image_path": image_path,
@@ -135,7 +134,7 @@ def co3d_to_lvsm_format(co3d_base_dir: str, output_dir: str,
                 
                 scene_data["frames"].append(frame_data)
             
-            # Only save sequences with enough frames
+            # Only save sequences with enough valid frames
             if len(scene_data["frames"]) < min_frames:
                 print(f"Skipping sequence {seq_name} - not enough valid frames")
                 continue
@@ -160,7 +159,7 @@ def co3d_to_lvsm_format(co3d_base_dir: str, output_dir: str,
     return all_json_paths
 
 if __name__ == "__main__":
-
+    
     
     co3d_to_lvsm_format(
         co3d_base_dir="/home/stud/lavingal/storage/group/dataset_mirrors/01_incoming/Co3D",
