@@ -310,7 +310,7 @@ class Images2LatentScene(nn.Module):
         Render a video from the model.
         
         Args:
-            result: Edict from forward pass or just data
+            data_batch: Dictionary or EasyDict containing input data
             traj_type: Type of trajectory
             num_frames: Number of frames to render
             loop_video: Whether to loop the video
@@ -319,8 +319,11 @@ class Images2LatentScene(nn.Module):
         Returns:
             result: Updated with video rendering
         """
-    
-        if data_batch.input is None:
+        # Convert dictionary to EasyDict if needed
+        if isinstance(data_batch, dict) and not isinstance(data_batch, edict):
+            data_batch = edict(data_batch)
+
+        if not hasattr(data_batch, 'input') or data_batch.input is None:
             input, target = self.process_data(data_batch, has_target_image=False, target_has_input=self.config.training.target_has_input, compute_rays=True)
             data_batch = edict(input=input, target=target)
         else:
@@ -390,7 +393,7 @@ class Images2LatentScene(nn.Module):
         )
                 
         _, num_views, c, h, w = target_pose_cond.size()
-    
+
         target_pose_tokens = self.target_pose_tokenizer(target_pose_cond) # [bs*v_target, n_patches, d]
         _, n_patches, d = target_pose_tokens.size()  # [b*v_target, n_patches, d]
         target_pose_tokens = target_pose_tokens.reshape(bs, num_views * n_patches, d)  # [b, v_target*n_patches, d]
@@ -407,8 +410,8 @@ class Images2LatentScene(nn.Module):
             start_idx, end_idx = cur_chunk * n_patches, (cur_chunk + cur_view_chunk_size) * n_patches            
             # [b, v_target * n_patches, d] -> [b, cur_v_target*n_patches, d] -> [b*cur_v_target, n_patches, d]
             cur_target_pose_tokens = rearrange(target_pose_tokens[:, start_idx:end_idx,: ], 
-                                               "b (v_chunk p) d -> (b v_chunk) p d", 
-                                               v_chunk=cur_view_chunk_size, p=n_patches)
+                                            "b (v_chunk p) d -> (b v_chunk) p d", 
+                                            v_chunk=cur_view_chunk_size, p=n_patches)
 
             cur_concat_input_tokens = torch.cat((repeated_input_img_tokens, cur_target_pose_tokens,), dim=1) # [b*cur_v_target, v_input*n_patches+n_patches, d]
             cur_concat_input_tokens = self.transformer_input_layernorm(
@@ -421,9 +424,20 @@ class Images2LatentScene(nn.Module):
                 [v_input * n_patches, n_patches], dim=1
             ) # [b * v_target, v*n_patches, d], [b * v_target, n_patches, d]
             
-            # For diffusion model inference, we would run the sampling loop here
-            # But for simplicity and compatibility, we use direct prediction for inference
-            predicted_tokens = pred_target_image_tokens
+            # For diffusion model inference, run sampling if configured
+            if self.config.model.diffusion.get("use_diffusion", False) and hasattr(self.config.inference, "use_sampling") and self.config.inference.get("use_sampling", True):
+                # Get diffusion parameters
+                steps = self.config.inference.get("diffusion_steps", 50)
+                eta = self.config.inference.get("eta", 0.0)
+                
+                # Start from random noise
+                noise = torch.randn_like(pred_target_image_tokens)
+                
+                # Use DDPM sampling
+                predicted_tokens = self.sample_diffusion(pred_target_image_tokens, noise, steps, eta)
+            else:
+                # Use direct prediction (no diffusion sampling)
+                predicted_tokens = pred_target_image_tokens
 
             height, width = target.image_h_w
 
@@ -446,8 +460,47 @@ class Images2LatentScene(nn.Module):
         video_rendering = torch.cat(video_rendering_list, dim=1)
         data_batch.video_rendering = video_rendering
 
-
         return data_batch
+
+    @torch.no_grad()
+    def sample_diffusion(self, noise_prediction, noise, num_inference_steps=50, eta=0.0):
+        """
+        Perform DDPM sampling to generate image tokens from noise using the predicted noise.
+        
+        Args:
+            noise_prediction: The model's prediction of the noise
+            noise: Initial noise
+            num_inference_steps: Number of denoising steps
+            eta: Controls the stochasticity (0 = deterministic, 1 = stochastic)
+            
+        Returns:
+            The denoised tokens
+        """
+        # Initialize with random noise
+        sample = noise
+        
+        # Set timesteps for inference
+        self.noise_scheduler.set_timesteps(num_inference_steps)
+        
+        # Sampling loop
+        for t in self.noise_scheduler.timesteps:
+            # Expand the timestep to match batch size
+            timestep = t.expand(noise.shape[0])
+            
+            # Get model prediction (predicted noise)
+            pred_noise = noise_prediction
+            
+            # Perform denoising step
+            sample = self.noise_scheduler.step(
+                model_output=pred_noise,
+                timestep=timestep,
+                sample=sample,
+                eta=eta
+            ).prev_sample
+        
+        return sample
+
+
 
     @torch.no_grad()
     def load_ckpt(self, load_path):

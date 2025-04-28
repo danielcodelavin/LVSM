@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 import torch.distributed as dist
 from setup import init_config, init_distributed
 from utils.metric_utils import export_results, summarize_evaluation
+from easydict import EasyDict as edict
 
 # Load config and read(override) arguments from CLI
 config = init_config()
@@ -72,6 +73,45 @@ dist.barrier()
 datasampler.set_epoch(0)
 model.eval()
 
+def save_video_results(result, output_dir):
+    """Save video rendering results to the output directory."""
+    if not hasattr(result, 'video_rendering') or result.video_rendering is None:
+        return
+    
+    import torch
+    import os
+    import imageio
+    from PIL import Image
+    import numpy as np
+    
+    os.makedirs(output_dir, exist_ok=True)
+    videos_dir = os.path.join(output_dir, 'videos')
+    os.makedirs(videos_dir, exist_ok=True)
+    
+    # Get video tensors
+    video_tensor = result.video_rendering  # [b, num_frames, 3, h, w]
+    
+    # Save each batch as a separate video
+    for batch_idx in range(video_tensor.shape[0]):
+        frames = []
+        for frame_idx in range(video_tensor.shape[1]):
+            # Convert tensor to numpy image - convert to float32 first to handle bfloat16
+            frame = video_tensor[batch_idx, frame_idx].to(torch.float32).permute(1, 2, 0)  # [3, h, w] -> [h, w, 3]
+            frame = frame.cpu().numpy()
+            frame = (frame * 255).clip(0, 255).astype(np.uint8)
+            frames.append(frame)
+        
+        # Save as video
+        video_path = os.path.join(videos_dir, f'video_{batch_idx:04d}.mp4')
+        imageio.mimwrite(video_path, frames, fps=24, quality=8)
+        
+        # Save a preview image (first frame)
+        img = Image.fromarray(frames[0])
+        img.save(os.path.join(videos_dir, f'preview_{batch_idx:04d}.png'))
+    
+    print(f"Saved {video_tensor.shape[0]} videos to {videos_dir}")
+
+
 with torch.no_grad(), torch.autocast(
     enabled=config.training.use_amp,
     device_type="cuda",
@@ -80,21 +120,8 @@ with torch.no_grad(), torch.autocast(
     for batch in dataloader:
         batch = {k: v.to(ddp_info.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
         
-      
-        if not config.inference.get("render_video", False):
-            result = model(batch)
-            
-            
-            if config.model.diffusion.get("use_diffusion", False) and config.inference.get("use_sampling", True):
-             
-                sampling_config = {
-                    "num_inference_steps": config.inference.get("diffusion_steps", 50),
-                    "eta": config.inference.get("eta", 0.0)  # Controls stochasticity
-                }
-                
-                # Run diffusion sampling through model's built-in method
-                result = model.module.sample_images(result, **sampling_config)
-        else:
+        # Handle video rendering separately
+        if config.inference.get("render_video", False):
             # For video rendering
             render_config = config.inference.get("render_video_config", {})
             
@@ -105,37 +132,55 @@ with torch.no_grad(), torch.autocast(
                     "eta": config.inference.get("eta", 0.0)
                 })
                 
+            # Run video rendering
             result = model.module.render_video(batch, **render_config)
-        
-      
-        if config.inference.get("compute_metrics", False):
-            # Initialize metrics dictionary if not present
-            if not hasattr(result, 'metrics') or result.metrics is None:
-                result.metrics = {}
+            
+            # Use custom function to save video results
+            if ddp_info.is_main_process:
+                save_video_results(result, config.inference_out_dir)
+        else:
+            # Standard image rendering
+            result = model(batch)
+            
+            if config.model.diffusion.get("use_diffusion", False) and config.inference.get("use_sampling", True):
+                sampling_config = {
+                    "num_inference_steps": config.inference.get("diffusion_steps", 50),
+                    "eta": config.inference.get("eta", 0.0)  # Controls stochasticity
+                }
                 
-            # Compute metrics if we have ground truth
-            if hasattr(result.target, 'image') and result.target.image is not None and result.render is not None:
-                # Use the loss computer to calculate metrics
-                with torch.no_grad():
-                    metrics = model.module.loss_computer(
-                        rendering=result.render, 
-                        target=result.target.image
-                    )
+                # Run diffusion sampling through model's built-in method
+                result = model.module.sample_images(result, **sampling_config)
+                
+            # Compute metrics if requested
+            if config.inference.get("compute_metrics", False):
+                # Initialize metrics dictionary if not present
+                if not hasattr(result, 'metrics') or result.metrics is None:
+                    result.metrics = {}
                     
-                    # Copy metrics to result
-                    for k, v in metrics.items():
-                        if k != 'loss':  # Skip the loss value itself
-                            result.metrics[k] = v
-        
-        # Export results
-        export_results(result, config.inference_out_dir, compute_metrics=config.inference.get("compute_metrics", False))
+                # Compute metrics if we have ground truth
+                if hasattr(result.target, 'image') and result.target.image is not None and result.render is not None:
+                    # Use the loss computer to calculate metrics
+                    with torch.no_grad():
+                        metrics = model.module.loss_computer(
+                            rendering=result.render, 
+                            target=result.target.image
+                        )
+                        
+                        # Copy metrics to result
+                        for k, v in metrics.items():
+                            if k != 'loss':  # Skip the loss value itself
+                                result.metrics[k] = v
+            
+            # Export results
+            export_results(result, config.inference_out_dir, 
+                        compute_metrics=config.inference.get("compute_metrics", False))
     
     torch.cuda.empty_cache()
 
 
 dist.barrier()
 
-if ddp_info.is_main_process and config.inference.get("compute_metrics", False):
+if ddp_info.is_main_process and config.inference.get("compute_metrics", False) and not config.inference.get("render_video", False):
     summarize_evaluation(config.inference_out_dir)
     if config.inference.get("generate_website", True):
         os.system(f"python generate_html.py {config.inference_out_dir}")
