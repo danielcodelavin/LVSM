@@ -7,7 +7,6 @@ from einops import rearrange
 import imageio
 
 
-
 def create_video_from_frames(frames, output_video_file, framerate=30):
     """
     Creates a video from a sequence of frames.

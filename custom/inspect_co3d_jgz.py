@@ -13,6 +13,7 @@ def inspect_jgz_file(jgz_path: str, num_samples: int = 1):
 
     print(frame_annotations[0])
 
+    
 
     # Display metadata for the first few frames
     for i, frame in enumerate(frame_annotations[:num_samples]):
