@@ -53,6 +53,9 @@ class Dataset(Dataset):
         resize_h = self.config.model.image_tokenizer.image_size
         patch_size = self.config.model.image_tokenizer.patch_size
         square_crop = self.config.training.get("square_crop", False)
+        # New option, defaulting to False for backward compatibility
+        uniform_size = self.config.training.get("uniform_crop_size", False)
+        target_size = resize_h  # Target uniform size (typically 256)
 
         images = []
         intrinsics = []
@@ -62,15 +65,22 @@ class Dataset(Dataset):
             
             resize_w = int(resize_h / original_image_h * original_image_w)
             resize_w = int(round(resize_w / patch_size) * patch_size)
-            # if torch.distributed.get_rank() == 0:
-            #     import ipdb; ipdb.set_trace()
 
             image = image.resize((resize_w, resize_h), resample=PIL.Image.LANCZOS)
+            
+            # Original square crop logic
             if square_crop:
                 min_size = min(resize_h, resize_w)
                 start_h = (resize_h - min_size) // 2
                 start_w = (resize_w - min_size) // 2
                 image = image.crop((start_w, start_h, start_w + min_size, start_h + min_size))
+                
+                # Add extra resize step ONLY if uniform_size is enabled AND
+                # the crop size is different from the target size
+                if uniform_size and min_size != target_size:
+                    image = image.resize((target_size, target_size), resample=PIL.Image.LANCZOS)
+                    # Adjust intrinsics to account for this second resize
+                    extra_scale = target_size / min_size
 
             image = np.array(image) / 255.0
             image = torch.from_numpy(image).permute(2, 0, 1).float()
@@ -78,9 +88,15 @@ class Dataset(Dataset):
             resize_ratio_x = resize_w / original_image_w
             resize_ratio_y = resize_h / original_image_h
             fxfycxcy *= (resize_ratio_x, resize_ratio_y, resize_ratio_x, resize_ratio_y)
+            
             if square_crop:
                 fxfycxcy[2] -= start_w
                 fxfycxcy[3] -= start_h
+                
+                # Adjust intrinsics for the extra resize if applied
+                if uniform_size and min_size != target_size:
+                    fxfycxcy *= (extra_scale, extra_scale, extra_scale, extra_scale)
+                    
             fxfycxcy = torch.from_numpy(fxfycxcy).float()
             images.append(image)
             intrinsics.append(fxfycxcy)
@@ -91,6 +107,7 @@ class Dataset(Dataset):
         c2ws = np.linalg.inv(w2cs) # (num_frames, 4, 4)
         c2ws = torch.from_numpy(c2ws).float()
         return images, intrinsics, c2ws
+        
 
     def preprocess_poses(
         self,
