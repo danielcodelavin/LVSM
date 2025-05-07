@@ -7,7 +7,7 @@ import tempfile
 ZIP_PATH = "/home/stud/lavingal/storage/group/dataset_mirrors/01_incoming/ObjaverseXL-curated/xl_renderings.zip"
 UUID_LIST_PATH = "/home/stud/lavingal/storage/group/dataset_mirrors/01_incoming/ObjaverseXL-curated/objaverseXL_curated_uuid_list.txt"
 OUTPUT_DIR = "/home/stud/lavingal/storage/slurm/lavingal/LVSM/custom/objaverse_sample"
-NUM_SAMPLES = 5  # Number of sample objects to extract
+NUM_SAMPLES = 40  # Number of sample objects to extract
 
 def extract_objaverse_samples():
     """

@@ -31,7 +31,7 @@ training:
   checkpoint_every: 2000
   dataset_name: data.dataset_scene.Dataset
   dataset_path: ./datasets/co3d_index/full_list.txt
-  grad_accum_steps: 4
+  grad_accum_steps: 2
   grad_checkpoint_every: 1
   grad_clip_norm: 1.0
 
