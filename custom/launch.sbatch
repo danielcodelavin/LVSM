@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name="Rand_LVSM"
+#SBATCH --job-name="DownloadObjaverse"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
 #SBATCH --mail-type=ALL
-#SBATCH --gres=gpu:1,VRAM:96G
-#SBATCH --time=13-12:00:00
+#SBATCH --gres=gpu:0
+#SBATCH --time=12-00:00:00
 #SBATCH --output=/home/stud/lavingal/storage/slurm/lavingal/run_reports/slurm-%j.out
 #SBATCH --error=/home/stud/lavingal/storage/slurm/lavingal/run_reports/slurm-%j.out
-torchrun --nproc_per_node 1 --nnodes 1 --rdzv_id 18635 --rdzv_backend c10d --rdzv_endpoint localhost:29502 train.py --config configs/LVSM_scene_decoder_only.yaml
+python download_objaverse10.py

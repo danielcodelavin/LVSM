@@ -12,8 +12,58 @@ from utils.metric_utils import visualize_intermediate_results
 from utils.training_utils import create_optimizer, create_lr_scheduler, auto_resume_job, print_rank0
 
 
+import copy
+import random
+
+class ViewManager:
+    def __init__(self, config):
+        self.config = config
+        # Store original values
+        self.original_values = {
+            'num_views': config.training.num_views,
+            'num_input_views': config.training.num_input_views,
+            'num_target_views': config.training.num_target_views
+        }
+        self.variable_enabled = config.training.variable_amount_of_views
+    
+    def randomize_for_batch(self):
+        """Randomize view counts for the current batch if enabled."""
+        if not self.variable_enabled:
+            return  # Do nothing if feature is disabled
+
+        # Generate random values
+        num_views = 8  
+        num_input_views = random.randint(1, 4)
+        num_target_views = num_views - num_input_views
+        
+        # Update config directly
+        self.config.training.num_views = num_views
+        self.config.training.num_input_views = num_input_views
+        self.config.training.num_target_views = num_target_views
+        
+        return {
+            'num_views': num_views,
+            'num_input_views': num_input_views,
+            'num_target_views': num_target_views
+        }
+    
+    def reset_to_original(self):
+        """Reset to original values if needed."""
+        if not self.variable_enabled:
+            return  # Nothing to do
+            
+        # Restore original values
+        for key, value in self.original_values.items():
+            setattr(self.config.training, key, value)
+
+
+
+
 # Load config and read(override) arguments from CLI
 config = init_config()
+
+# the view manager randomizes the number of views for each batch, if enablede
+view_manager = ViewManager(config)
 
 os.environ["OMP_NUM_THREADS"] = str(config.training.get("num_threads", 1))
 
@@ -115,6 +165,15 @@ model.train()
 while cur_train_step <= total_train_steps:
     tic = time.time()
     cur_epoch = int(cur_train_step * (total_batch_size / grad_accum_steps) // len(dataset) )
+    
+    # IF this is active, the viewcount will be randomized for each batch
+    view_info = view_manager.randomize_for_batch()
+    
+    # Log the view counts if they were changed and we're the main process
+    if view_info and ddp_info.is_main_process and cur_train_step % config.training.print_every == 0:
+        print(f"Using random views: input={view_info['num_input_views']}, target={view_info['num_target_views']}, total={view_info['num_views']}")
+    
+    
     try:
         # if start_train_step == cur_train_step:
         #     print(f"Current Rank {ddp_info.local_rank} Restarting training from step {cur_train_step}. Resetting dataloader epoch to {cur_epoch}; might take a while...")
