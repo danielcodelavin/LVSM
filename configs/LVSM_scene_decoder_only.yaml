@@ -44,7 +44,7 @@ training:
   train_steps: 500000
 
 
-  num_input_views: 2
+  num_input_views: 1
   num_target_views: 6
   num_threads: 8
   num_views: 8
@@ -56,9 +56,9 @@ training:
   square_crop: true
   #custom stuff
   uniform_crop_size: False  # FALSE IS ORIGINAL LVSM BEHAVIOUR - TRUE IS FOR NEW DATASETS THAT DO NOT HAVE SAME ASPECT RATIO
-  random_sample_views: true 
+  random_sample_views: True 
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - TRUE MEANS WE RANDOMLY SAMPLE VIEWS - IN FALSE WE ONLY TAKE TARGET VIEWS IN BETWEEN THE INPUT VIEWS
-  variable_amount_of_views: true 
+  variable_amount_of_views: False 
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - True means we use default viewcount - whats in the config - with false we regenerate amount of views for each batch
 
 
@@ -83,7 +83,7 @@ inference:
   if_inference: False
   compute_metrics: False
   view_idx_file_path: ./data/evaluation_index_re10k.json
-  render_video: True
+  render_video: False
   render_video_config:
     traj_type: interpolate
     num_frames: 60
