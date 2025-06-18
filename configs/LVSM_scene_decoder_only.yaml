@@ -31,7 +31,7 @@ training:
   checkpoint_every: 2000
   dataset_name: data.dataset_scene.Dataset
   dataset_path: ./datasets/re10k/train/full_list.txt
-  grad_accum_steps: 4
+  grad_accum_steps: 2
   grad_checkpoint_every: 1
   grad_clip_norm: 1.0
 
@@ -44,16 +44,16 @@ training:
   train_steps: 500000
 
 
-  num_input_views: 1
+  num_input_views: 2
   num_target_views: 6
   num_threads: 8
   num_views: 8
   num_workers: 4
   prefetch_factor: 32
   print_every: 20
-
-
   square_crop: true
+  
+  
   #custom stuff
   uniform_crop_size: False  # FALSE IS ORIGINAL LVSM BEHAVIOUR - TRUE IS FOR NEW DATASETS THAT DO NOT HAVE SAME ASPECT RATIO
   random_sample_views: True 
@@ -70,7 +70,7 @@ training:
     max_frame_dist: 192
     min_frame_dist: 25
   vis_every: 1000
-  wandb_exp_name: RANDOM_LVSM_RE10K
+  wandb_exp_name: Extrapolate_RE10K_NORANDOM
   wandb_log_every: 50
   
   wandb_project: LVSM

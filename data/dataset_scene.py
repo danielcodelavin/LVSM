@@ -147,6 +147,11 @@ class Dataset(Dataset):
 
     def view_selector(self, frames):
         random_behavior= self.config.training.get("random_sample_views", False)
+        if len(frames) < self.config.training.num_views:
+            # Returning None will trigger the fallback in __getitem__ to load a different scene
+            return None
+       
+       
         if not random_behavior:
             if len(frames) < self.config.training.num_views:
                 return None
@@ -164,7 +169,8 @@ class Dataset(Dataset):
             sampled_frames = random.sample(range(start_frame + 1, end_frame), self.config.training.num_views-2) # target views betwen start and end frame
             image_indices = [start_frame, end_frame] + sampled_frames
             return image_indices
-        if random_behavior:
+        else:  
+            # This logic is now also protected by the check at the top
             image_indices = random.sample(range(len(frames)), self.config.training.num_views)
             return image_indices
 
