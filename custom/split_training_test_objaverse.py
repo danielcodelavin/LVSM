@@ -43,8 +43,8 @@ def create_file_list(input_dir, output_file):
 
 if __name__ == '__main__':
     
-    input_path = "/storage/slurm/lavingal/lavingal/LVSM/datasets/objaverseplus/metadata"
-    output_path = "/storage/slurm/lavingal/lavingal/LVSM/datasets/objaverseplus/full_list.txt"
+    input_path = "/home/stud/lavingal/storage/slurm/lavingal/LVSM/datasets/GSO_rendered/metadata"
+    output_path = "/home/stud/lavingal/storage/slurm/lavingal/LVSM/datasets/GSO_rendered/full_list.txt"
     
     # Run the function
     create_file_list(input_path, output_path)

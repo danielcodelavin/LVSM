@@ -11,10 +11,10 @@ import torch.nn.functional as F
 
 
 class Dataset(Dataset):
-    def __init__(self, config):
+    def __init__(self, config, load_all_views=False):
         super().__init__()
         self.config = config
-
+        self.load_all_views = load_all_views
         try:
             with open(self.config.training.dataset_path, 'r') as f:
                 self.all_scene_paths = f.read().splitlines()
@@ -183,14 +183,24 @@ class Dataset(Dataset):
         frames = data_json["frames"]
         scene_name = data_json["scene_name"]
 
-        if self.inference and scene_name in self.view_idx_list:
-            current_view_idx = self.view_idx_list[scene_name]
-            image_indices= current_view_idx["context"] + current_view_idx["target"]
+        if self.load_all_views:
+            image_indices = list(range(len(frames)))
+            if len(image_indices) < self.config.training.num_views:
+                # If there are not enough views, return None to trigger fallback
+                return None
+            if len(image_indices) > self.config.training.num_views:
+                return None
         else:
-            # sample input and target views
-            image_indices = self.view_selector(frames)
-            if image_indices is None:
-                return self.__getitem__(random.randint(0, len(self) - 1))
+            if self.inference and scene_name in self.view_idx_list:
+                current_view_idx = self.view_idx_list[scene_name]
+                image_indices= current_view_idx["context"] + current_view_idx["target"]
+            else:
+                # sample input and target views
+                image_indices = self.view_selector(frames)
+                if image_indices is None:
+                    return self.__getitem__(random.randint(0, len(self) - 1))
+        
+       
         image_paths_chosen = [frames[ic]["image_path"] for ic in image_indices]
         frames_chosen = [frames[ic] for ic in image_indices]
         input_images, input_intrinsics, input_c2ws = self.preprocess_frames(frames_chosen, image_paths_chosen)
