@@ -21,16 +21,16 @@ model:
 training:
   amp_dtype: bf16
   api_key_path: ./configs/api_keys.yaml
-  batch_size_per_gpu: 32
+  batch_size_per_gpu: 16
   beta1: 0.9
   beta2: 0.95
   allowed_gradnorm_factor: 5
   center_crop: true
   scene_scale_factor: 1.35
-  checkpoint_dir: ./experiments/checkpoints/LVSM_re10k_extrapolation_norandom
+  checkpoint_dir: ./experiments/checkpoints/mini_lvsm_chunk_test_lvsm
   checkpoint_every: 2000
   dataset_name: data.dataset_scene.Dataset
-  dataset_path: ./datasets/re10k/train/full_list.txt
+  dataset_path: /storage/slurm/lavingal/lavingal/LVSM/datasets/re10k_train_chunks_all_views
   grad_accum_steps: 2
   grad_checkpoint_every: 1
   grad_clip_norm: 1.0
@@ -56,7 +56,7 @@ training:
   
   #custom stuff
   uniform_crop_size: False  # FALSE IS ORIGINAL LVSM BEHAVIOUR - TRUE IS FOR NEW DATASETS THAT DO NOT HAVE SAME ASPECT RATIO
-  random_sample_views: True 
+  random_sample_views: False 
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - TRUE MEANS WE RANDOMLY SAMPLE VIEWS - IN FALSE WE ONLY TAKE TARGET VIEWS IN BETWEEN THE INPUT VIEWS
   variable_amount_of_views: False 
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - False means we use default viewcount - whats in the config - with True we regenerate amount of views for each batch
@@ -70,7 +70,7 @@ training:
     max_frame_dist: 192
     min_frame_dist: 25
   vis_every: 1000
-  wandb_exp_name: Extrapolate_RE10K_NORANDOM
+  wandb_exp_name: mini chunk test lvsm
   wandb_log_every: 50
   
   wandb_project: LVSM

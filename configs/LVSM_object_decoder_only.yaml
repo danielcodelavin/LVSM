@@ -27,10 +27,9 @@ training:
   allowed_gradnorm_factor: 5
   center_crop: true
   scene_scale_factor: 1.35
-  checkpoint_dir: ./experiments/checkpoints/4grad_LVSM_objaverse_extrapol_norandom
-  checkpoint_every: 2000
+  checkpoint_dir: ./experiments/checkpoints/Mini_chunked_LVSM_test_extrapol_on
   dataset_name: data.dataset_scene.Dataset
-  dataset_path: ./datasets/objaverseplus_processed/full_list_processed.txt
+  dataset_path: ./datasets/re10k_test_chunks_all_views
   grad_accum_steps: 4
   grad_checkpoint_every: 1
   grad_clip_norm: 1.0
@@ -70,7 +69,7 @@ training:
     max_frame_dist: 192
     min_frame_dist: 25
   vis_every: 1000
-  wandb_exp_name: 4_GRAD_OBJA_EXTRAP_NORANDOM_LVSM
+  wandb_exp_name: Mini_chunked_LVSM_test_extrapol_on
   wandb_log_every: 50
   
   wandb_project: LVSM
