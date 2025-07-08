@@ -59,7 +59,8 @@ training:
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - TRUE MEANS WE RANDOMLY SAMPLE VIEWS - IN FALSE WE ONLY TAKE TARGET VIEWS IN BETWEEN THE INPUT VIEWS
   variable_amount_of_views: False 
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - False means we use default viewcount - whats in the config - with True we regenerate amount of views for each batch
-
+  use_diffusion: False
+  # False means we use the original LVSM behaviour - True means we use diffusion to generate
 
   target_has_input: true
   use_amp: true

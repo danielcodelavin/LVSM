@@ -11,6 +11,64 @@ from utils.metric_utils import visualize_intermediate_results
 from utils.training_utils import create_optimizer, create_lr_scheduler, auto_resume_job, print_rank0
 import random
 import litdata as ld
+import torch
+from fvcore.nn import FlopCountAnalysis
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+def analyze_flops(model, dataloader, config, ddp_info, amp_dtype_mapping):
+    """
+    A self-contained function to calculate GFLOPs and log them to wandb.
+    """
+    if not ddp_info.is_main_process:
+        return
+
+    print_rank0("--- Starting GFLOPs Analysis ---")
+    
+    # Get a valid sample batch
+    sample_batch = None
+    while sample_batch is None:
+        try:
+            sample_batch = next(iter(dataloader))
+        except StopIteration:
+            print_rank0("Could not get a batch for FLOPs analysis. Resetting dataloader.")
+            dataloader_iter = iter(dataloader)
+    sample_batch = {k: v.to(ddp_info.device) if isinstance(v, torch.Tensor) else v for k, v in sample_batch.items()}
+
+    # Unwrap model and set to eval mode
+    model_for_flops = model.module if isinstance(model, DDP) else model
+    model_for_flops.eval()
+
+    # Temporarily disable gradient checkpointing
+    original_pass_layers = model_for_flops.pass_layers
+    model_for_flops.pass_layers = lambda tokens, **kwargs: original_pass_layers(tokens, gradient_checkpoint=False)
+
+    try:
+        # Use no_grad to prevent CUDA OOM and mirror autocast context
+        with torch.no_grad(), torch.autocast(
+            enabled=config.training.use_amp,
+            device_type="cuda",
+            dtype=amp_dtype_mapping[config.training.amp_dtype],
+        ):
+            # Perform the analysis
+            flops_analyzer = FlopCountAnalysis(model_for_flops, (sample_batch,))
+            total_flops = flops_analyzer.total()
+            
+        gmacs = total_flops / 1e9
+        gflops = gmacs * 2
+
+        print_rank0(f"Model Configuration: {config.training.num_input_views} Input Views, {config.training.num_target_views} Target Views")
+        print_rank0(f"Autocast dtype: {str(amp_dtype_mapping[config.training.amp_dtype])}")
+        print_rank0(f"Total MACs for one forward pass: {gmacs:.4f} G")
+        print_rank0(f"Estimated GFLOPs: {gflops:.4f} G")
+
+        # Log the GFLOPs value to wandb summary
+        wandb.summary["GFLOPs"] = gflops
+
+    finally:
+        # ALWAYS restore the original method and set model back to train mode
+        model_for_flops.pass_layers = original_pass_layers
+        model_for_flops.train()
+        print_rank0("--- GFLOPs Analysis Complete ---")
 
 
 class LitDataCollate:
@@ -193,6 +251,8 @@ enable_grad_scaler = config.training.use_amp and config.training.amp_dtype == "f
 scaler = torch.amp.GradScaler('cuda', enabled=enable_grad_scaler)
 print_rank0(f"Grad scaler enabled: {enable_grad_scaler}")
 dist.barrier()
+
+analyze_flops(model, dataloader, config, ddp_info, amp_dtype_mapping)
 
 start_train_step = cur_train_step
 model.train()
