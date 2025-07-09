@@ -18,6 +18,13 @@ model:
     depth_init: true
     use_qk_norm: true
 
+diffusion:
+  num_train_timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+  beta_schedule: "linear"
+
+
 training:
   amp_dtype: bf16
   api_key_path: ./configs/api_keys.yaml

@@ -28,9 +28,9 @@ def get_num_workers():
 
 if __name__ == '__main__':
     # --- Configuration ---
-    CONFIG_FILE = "./configs/LVSM_scene_decoder_only.yaml"
-    MASTER_LIST_FILE = "./datasets/re10k/test/full_list.txt"
-    OUTPUT_CHUNK_DIR = "./datasets/re10k_test_chunks_all_views"
+    CONFIG_FILE = "./configs/LVSM_object_decoder_only.yaml"
+    MASTER_LIST_FILE = "./datasets/objaverseplus_processed/full_list_processed.txt"
+    OUTPUT_CHUNK_DIR = "./datasets/objaverseplus_chunked"
     
     
     BATCH_SIZE = 100
@@ -40,7 +40,7 @@ if __name__ == '__main__':
     SOURCE_DATA_ROOT = os.path.dirname(os.path.dirname(MASTER_LIST_FILE))
     
    
-    STATE_FILE = os.path.join(os.path.dirname(OUTPUT_CHUNK_DIR), "chunking_test_progress.txt")
+    STATE_FILE = os.path.join(os.path.dirname(OUTPUT_CHUNK_DIR), "chunking_obja_progress.txt")
 
  
     config = load_config_for_prep(CONFIG_FILE)

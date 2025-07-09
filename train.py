@@ -11,9 +11,8 @@ from utils.metric_utils import visualize_intermediate_results
 from utils.training_utils import create_optimizer, create_lr_scheduler, auto_resume_job, print_rank0
 import random
 import litdata as ld
-import torch
 from fvcore.nn import FlopCountAnalysis
-from torch.nn.parallel import DistributedDataParallel as DDP
+
 
 def analyze_flops(model, dataloader, config, ddp_info, amp_dtype_mapping):
     """
@@ -24,32 +23,30 @@ def analyze_flops(model, dataloader, config, ddp_info, amp_dtype_mapping):
 
     print_rank0("--- Starting GFLOPs Analysis ---")
     
-    # Get a valid sample batch
     sample_batch = None
+    dataloader_iter = iter(dataloader)
     while sample_batch is None:
         try:
-            sample_batch = next(iter(dataloader))
+            # The collate_fn can return None, so we loop until we get a valid batch
+            sample_batch = next(dataloader_iter)
         except StopIteration:
-            print_rank0("Could not get a batch for FLOPs analysis. Resetting dataloader.")
-            dataloader_iter = iter(dataloader)
+            print_rank0("Could not get a batch for FLOPs analysis. Dataloader exhausted.")
+            return
+    
     sample_batch = {k: v.to(ddp_info.device) if isinstance(v, torch.Tensor) else v for k, v in sample_batch.items()}
 
-    # Unwrap model and set to eval mode
     model_for_flops = model.module if isinstance(model, DDP) else model
     model_for_flops.eval()
 
-    # Temporarily disable gradient checkpointing
     original_pass_layers = model_for_flops.pass_layers
     model_for_flops.pass_layers = lambda tokens, **kwargs: original_pass_layers(tokens, gradient_checkpoint=False)
 
     try:
-        # Use no_grad to prevent CUDA OOM and mirror autocast context
         with torch.no_grad(), torch.autocast(
             enabled=config.training.use_amp,
             device_type="cuda",
             dtype=amp_dtype_mapping[config.training.amp_dtype],
         ):
-            # Perform the analysis
             flops_analyzer = FlopCountAnalysis(model_for_flops, (sample_batch,))
             total_flops = flops_analyzer.total()
             
@@ -60,12 +57,9 @@ def analyze_flops(model, dataloader, config, ddp_info, amp_dtype_mapping):
         print_rank0(f"Autocast dtype: {str(amp_dtype_mapping[config.training.amp_dtype])}")
         print_rank0(f"Total MACs for one forward pass: {gmacs:.4f} G")
         print_rank0(f"Estimated GFLOPs: {gflops:.4f} G")
-
-        # Log the GFLOPs value to wandb summary
         wandb.summary["GFLOPs"] = gflops
 
     finally:
-        # ALWAYS restore the original method and set model back to train mode
         model_for_flops.pass_layers = original_pass_layers
         model_for_flops.train()
         print_rank0("--- GFLOPs Analysis Complete ---")
@@ -74,8 +68,7 @@ def analyze_flops(model, dataloader, config, ddp_info, amp_dtype_mapping):
 class LitDataCollate:
     """
     A robust collate function that filters each batch for valid samples
-    before performing view selection and stacking. This is the key to handling
-    the unfiltered, variable-view-count data chunks.
+    before performing view selection and stacking.
     """
     def __init__(self, config):
         self.config = config
@@ -83,21 +76,17 @@ class LitDataCollate:
     def __call__(self, batch):
         min_views_required = self.config.training.num_views
         
-        # 1. Filter the incoming batch to keep only samples with enough views
         valid_samples = [s for s in batch if s and 'image' in s and s['image'].shape[0] >= min_views_required]
 
-        # 2. If the batch has no valid samples after filtering, skip it by returning None.
         if not valid_samples:
             return None
 
-        # 3. Process the valid samples into a final batch
         processed_batch = {k: [] for k in valid_samples[0].keys()}
         num_views_to_sample = self.config.training.num_views
         random_behavior = self.config.training.get("random_sample_views", False)
 
         for sample in valid_samples:
             num_available_views = sample['image'].shape[0]
-
             if not random_behavior:
                 view_selector_config = self.config.training.view_selector
                 min_frame_dist = view_selector_config.get("min_frame_dist", 25)
@@ -181,17 +170,23 @@ amp_dtype_mapping = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torc
 # --- Dataloader Setup ---
 print_rank0("Initializing LitData StreamingDataset...")
 job_id = os.environ.get("SLURM_JOB_ID", f"local_{int(time.time())}")
-cache_dir_path = os.path.join(config.training.checkpoint_dir, ".litdata_cache", job_id)
+
+# --- RAM CACHING IMPLEMENTATION ---
+# Use the RAM Disk for caching to avoid HDD bottlenecks.
+cache_dir = f"/dev/shm/litdata_cache_{job_id}"
 if ddp_info.is_main_process:
-    os.makedirs(cache_dir_path, exist_ok=True)
+    os.makedirs(cache_dir, exist_ok=True)
 dist.barrier()
-print_rank0(f"Using LitData cache directory: {cache_dir_path}")
+print_rank0(f"Using RAM Disk cache directory: {cache_dir}")
 
 dataset = ld.StreamingDataset(
     input_dir=config.training.dataset_path,
-    cache_dir=cache_dir_path,
+    cache_dir=cache_dir,
+    max_cache_size="50GB",  # Allocate 50GB of RAM for caching
     shuffle=True,
 )
+# --- END RAM CACHING IMPLEMENTATION ---
+
 
 if len(dataset) == 0:
     print_rank0(f"\nFATAL ERROR: LitData dataset is empty. Check path: {os.path.abspath(config.training.dataset_path)}")
@@ -201,7 +196,6 @@ if len(dataset) == 0:
 collate_fn = LitDataCollate(config)
 batch_size_per_gpu = config.training.batch_size_per_gpu
 
-# Use the native LitData DataLoader, which works correctly with the StreamingDataset
 dataloader = ld.StreamingDataLoader(
     dataset,
     batch_size=batch_size_per_gpu,
@@ -265,12 +259,10 @@ while cur_train_step <= total_train_steps:
     if view_info and ddp_info.is_main_process and cur_train_step % config.training.print_every == 0:
         print(f"Using random views: input={view_info['num_input_views']}, target={view_info['num_target_views']}")
     
-    # This loop will now robustly handle bad batches by getting the next one.
     batch = None
     while batch is None:
         try:
             data = next(dataloader_iter)
-            # The collate_fn now returns None for invalid batches, which we check for here.
             if data is not None:
                 batch = {k: v.to(ddp_info.device) if isinstance(v, torch.Tensor) else v for k, v in data.items()}
         except StopIteration:
