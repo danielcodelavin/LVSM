@@ -9,6 +9,7 @@ import os
 from rich import print
 import traceback
 from torch.nn.parallel import DistributedDataParallel as DDP
+import glob
 
 
 def print_rank0(*args, **kwargs):
@@ -81,15 +82,18 @@ def create_lr_scheduler(optimizer, param_update_steps, warm_up_steps, scheduler_
 
 
 def find_checkpoints(load_path):
-    if os.path.isdir(load_path):
-        ckpt_names = [file_name for file_name in os.listdir(load_path) if file_name.endswith(".pt")]
-        ckpt_names = sorted(ckpt_names, key=lambda x: x)
-        ckpt_paths = [os.path.join(load_path, ckpt_name) for ckpt_name in ckpt_names]
-    else:
-        if load_path.endswith(".pt"):
-            ckpt_paths = [load_path]
-        else:
-            ckpt_paths = []
+    """Finds all model checkpoints in a given directory, ignoring other .pt files."""
+    if not os.path.isdir(load_path):
+        return []
+    
+    # Use glob to find only files that start with 'ckpt_' and end with '.pt'
+    # This will correctly ignore the 'dataloader_...pt' files.
+    ckpt_paths = glob.glob(os.path.join(load_path, "ckpt_*.pt"))
+    
+    # Sort them to ensure the latest checkpoint is the last one
+    if ckpt_paths:
+        ckpt_paths.sort()
+        
     return ckpt_paths
 
 
@@ -104,52 +108,51 @@ def auto_resume_job(
     """
     Resume training from the latest checkpoint in the specified directory.
     Returns the fwdbwd_pass_step and param_update_step.
-
-    Args:
-        load_path: If dir, load the last checkpoint in the directory.
-            O.w., assume it's a ckpt and load it.
-        model: model to be loaded
-        optimizer: optimizer to be loaded
-        lr_scheduler: lr scheduler to be loaded
-        reset_training_state: whether to reset the training state
-
-    Returns:
-        optimizer, lr_scheduler, forward_pass_step, param_update_step
-
     """
     forward_pass_step = 0
     param_update_step = 0
+    # This assumes a find_checkpoints function exists in this file
     all_ckpt_paths = find_checkpoints(load_path)
     if len(all_ckpt_paths) == 0:
-        print_rank0(f"No checkpoint found in {load_path}, we will start from scratch")
+        print_rank0(f"No checkpoint found in {load_path}, starting from scratch.")
         return optimizer, lr_scheduler, forward_pass_step, param_update_step
     try:
         ckpt_path = all_ckpt_paths[-1]
         checkpoint = torch.load(ckpt_path, map_location="cpu")
-    except:
+    except Exception:
         traceback.print_exc()
-        print_rank0(f"Failed to load {ckpt_path}, we will start from scratch")
+        print_rank0(f"Failed to load {ckpt_path}, starting from scratch.")
         return optimizer, lr_scheduler, forward_pass_step, param_update_step
 
-    # Load model weights
-    if isinstance(model, DDP):
-        status = model.module.load_state_dict(checkpoint['model'], strict=False)
+    # --- FIX STARTS HERE ---
+    # Intelligently find the model's state dictionary in the checkpoint file
+    if 'model' in checkpoint:
+        state_dict = checkpoint['model']
+    elif 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    elif 'model_state_dict' in checkpoint:
+        state_dict = checkpoint['model_state_dict']
     else:
-        status = model.load_state_dict(checkpoint['model'], strict=False)
-    print_rank0(f"Loaded model from {os.path.abspath(ckpt_path)}, the status is {status}")
+        # If no common key is found, assume the checkpoint file IS the state_dict
+        state_dict = checkpoint
+    
+    # Load model weights
+    model_to_load = model.module if isinstance(model, DDP) else model
+    status = model_to_load.load_state_dict(state_dict, strict=False)
+    print_rank0(f"Loaded model from {os.path.abspath(ckpt_path)}, status: {status}")
+    # --- FIX ENDS HERE ---
 
-    # resume training state
+    # Resume training state
     if not reset_training_state:
         try:
             optimizer.load_state_dict(checkpoint["optimizer"])
             lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-            forward_pass_step = checkpoint["fwdbwd_pass_step"]
-            param_update_step = checkpoint["param_update_step"]
+            forward_pass_step = checkpoint.get("fwdbwd_pass_step", 0)
+            param_update_step = checkpoint.get("param_update_step", 0)
             print_rank0(f"Resumed optimizer and lr_scheduler from {ckpt_path}")
-        except:
+        except Exception:
+            # This can fail if the checkpoint doesn't have optimizer/scheduler state
             traceback.print_exc()
-            print_rank0(f"Failed to load optimizer and lr_scheduler from {ckpt_path}")
+            print_rank0(f"Could not load optimizer/scheduler state from {ckpt_path}. They will be reset.")
     
     return optimizer, lr_scheduler, forward_pass_step, param_update_step
-
-

@@ -183,11 +183,11 @@ def generate_full_list(base_path, output_dir):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", type=str, default="train", choices=["train", "test"])
+    parser.add_argument("--mode", type=str, default="test", choices=["train", "test"])
     parser.add_argument("--chunk_size", type=int, default=10)
     parser.add_argument("--num_processes", type=int, default=32)
-    parser.add_argument("--output_dir", type=str, default='/share/phoenix/nfs06/S9/hj453/DATA/re10k/')
-    parser.add_argument("--base_path", type=str, default='/share/phoenix/nfs06/S9/hj453/DATA/re10k_raw/')
+    parser.add_argument("--output_dir", type=str, default='/storage/slurm/lavingal/lavingal/LVSM/datasets/re10k')
+    parser.add_argument("--base_path", type=str, default='/storage/slurm/lavingal/lavingal/LVSM/datasets/re10k_raw')
     
     args = parser.parse_args()
     # Example usage
