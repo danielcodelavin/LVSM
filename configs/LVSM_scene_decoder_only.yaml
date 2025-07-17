@@ -35,7 +35,7 @@ training:
   allowed_gradnorm_factor: 5
   center_crop: true
   scene_scale_factor: 1.35
-  checkpoint_dir: ./experiments/checkpoints/diffusion_RAM_h100_fvcore_lvsm_chunk_random_lvsm
+  checkpoint_dir: ./experiments/checkpoints/re10k_diffusion_extrapol_lpipsloss_chunked
   checkpoint_every: 10000
   dataset_name: data.dataset_scene.Dataset
   dataset_path: /storage/slurm/lavingal/lavingal/LVSM/datasets/re10k_train_chunks_all_views
@@ -64,11 +64,12 @@ training:
   
   #custom stuff
   uniform_crop_size: False  # FALSE IS ORIGINAL LVSM BEHAVIOUR - TRUE IS FOR NEW DATASETS THAT DO NOT HAVE SAME ASPECT RATIO
-  random_sample_views: True
+  random_sample_views: False
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - TRUE MEANS WE RANDOMLY SAMPLE VIEWS - IN FALSE WE ONLY TAKE TARGET VIEWS IN BETWEEN THE INPUT VIEWS
   variable_amount_of_views: False 
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - False means we use default viewcount - whats in the config - with True we regenerate amount of views for each batch
   use_diffusion: True
+  use_regular_mse_for_diffusion: False
 
   target_has_input: true
   use_amp: true
@@ -78,7 +79,7 @@ training:
     max_frame_dist: 192
     min_frame_dist: 25
   vis_every: 1000
-  wandb_exp_name: diffram fvcore chunk extrap lvsm
+  wandb_exp_name: re10k_diffusion_extrapol_lpipsloss_chunked
   wandb_log_every: 50
   
   wandb_project: LVSM

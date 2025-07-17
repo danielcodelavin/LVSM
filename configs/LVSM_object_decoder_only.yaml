@@ -44,7 +44,7 @@ training:
 
   l2_loss_weight: 1.0
   lpips_loss_weight: 0.0
-  perceptual_loss_weight: 0.5
+  perceptual_loss_weight: 1.0
 
   lr: 0.0004
   train_steps: 500000
@@ -68,6 +68,7 @@ training:
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - False means we use default viewcount - whats in the config - with True we regenerate amount of views for each batch
   use_diffusion: False
   # False means we use the original LVSM behaviour - True means we use diffusion to generate
+  use_regular_mse_for_diffusion: False
 
   target_has_input: true
   use_amp: true

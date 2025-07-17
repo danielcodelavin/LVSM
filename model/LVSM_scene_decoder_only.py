@@ -240,15 +240,18 @@ class Images2LatentScene(nn.Module):
         height, width, patch_size = target.image_h_w[0], target.image_h_w[1], self.config.model.target_pose_tokenizer.patch_size
         predicted_noise = rearrange(predicted_noise, "(b v) (h w) (p1 p2 c) -> (b v) c (h p1) (w p2)", b=b, v=v_target, h=height//patch_size, w=width//patch_size, p1=patch_size, p2=patch_size, c=3)
         
-        loss = F.mse_loss(predicted_noise, noise)
-        loss_metrics = edict(loss=loss, mse_loss=loss.detach())
-        
         alpha_prod_t = self.scheduler.alphas_cumprod[timesteps].to(device).float().view(-1, 1, 1, 1)
         beta_prod_t = 1 - alpha_prod_t
         pred_x0 = (noisy_images - beta_prod_t.sqrt() * predicted_noise) / alpha_prod_t.sqrt()
         
         pred_x0_reshaped = rearrange(pred_x0, "(b v) c h w -> b v c h w", b=b)
         rendered_images = torch.clamp(pred_x0_reshaped, -1.0, 1.0) / 2.0 + 0.5
+
+        if self.config.training.get("use_regular_mse_for_diffusion", True):
+            loss = F.mse_loss(predicted_noise, noise)
+            loss_metrics = edict(loss=loss, mse_loss=loss.detach())
+        else:
+            loss_metrics = self.loss_computer(rendered_images, target.image) if has_target_image else None
         
         return edict(input=input, target=target, loss_metrics=loss_metrics, render=rendered_images)
 

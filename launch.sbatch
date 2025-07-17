@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name="diff ramload chunked lvsm"
+#SBATCH --job-name="diff original loss re10k chunked lvsm"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=96G
 #SBATCH --mail-type=NONE
 #SBATCH --gres=gpu:nvidia_h100_nvl:1
-#SBATCH --time=4-12:00:00
+#SBATCH --time=7-12:00:00
 #SBATCH --output=/home/stud/lavingal/storage/slurm/lavingal/run_reports/slurm-%j.out
 #SBATCH --error=/home/stud/lavingal/storage/slurm/lavingal/run_reports/slurm-%j.out
 eval "$(conda shell.bash hook)"
