@@ -69,6 +69,8 @@ training:
   use_diffusion: False
   # False means we use the original LVSM behaviour - True means we use diffusion to generate
   use_regular_mse_for_diffusion: False
+  true_cross_attention: False
+
 
   target_has_input: true
   use_amp: true

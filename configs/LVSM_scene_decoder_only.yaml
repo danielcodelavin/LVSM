@@ -25,21 +25,20 @@ diffusion:
   beta_schedule: "linear"
 
 
-
 training:
   amp_dtype: bf16
   api_key_path: ./configs/api_keys.yaml
-  batch_size_per_gpu: 32
+  batch_size_per_gpu: 64
   beta1: 0.9
   beta2: 0.95
   allowed_gradnorm_factor: 5
   center_crop: true
   scene_scale_factor: 1.35
-  checkpoint_dir: ./experiments/checkpoints/re10k_diffusion_extrapol_lpipsloss_chunked
+  checkpoint_dir: ./experiments/checkpoints/re10k_diffusion_crossattention_noextrapol_regularmse
   checkpoint_every: 10000
   dataset_name: data.dataset_scene.Dataset
   dataset_path: /storage/slurm/lavingal/lavingal/LVSM/datasets/re10k_train_chunks_all_views
-  grad_accum_steps: 2
+  grad_accum_steps: 1
   grad_checkpoint_every: 1
   grad_clip_norm: 1.0
 
@@ -69,7 +68,8 @@ training:
   variable_amount_of_views: False 
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - False means we use default viewcount - whats in the config - with True we regenerate amount of views for each batch
   use_diffusion: True
-  use_regular_mse_for_diffusion: False
+  use_regular_mse_for_diffusion: True
+  true_cross_attention: True
 
   target_has_input: true
   use_amp: true
@@ -79,7 +79,7 @@ training:
     max_frame_dist: 192
     min_frame_dist: 25
   vis_every: 1000
-  wandb_exp_name: re10k_diffusion_extrapol_lpipsloss_chunked
+  wandb_exp_name: re10k_diffusion_noextrapol_crossattention_regularmse
   wandb_log_every: 50
   
   wandb_project: LVSM

@@ -182,14 +182,26 @@ class Images2LatentScene(nn.Module):
         b, v_target, _, _, _ = target_pose_cond.size()
         target_pose_tokens = self.target_pose_tokenizer(target_pose_cond)
         
-        repeated_input_img_tokens = repeat(input_img_tokens, 'b np d -> (b v_target) np d', v_target=v_target, np=n_patches * v_input)
-        transformer_input = torch.cat((repeated_input_img_tokens, target_pose_tokens), dim=1)
+        if self.config.training.get("true_cross_attention", False):
+            target_pose_tokens_flat = rearrange(target_pose_tokens, '(b v) p d -> b (v p) d', b=b)
+            transformer_input = torch.cat((input_img_tokens, target_pose_tokens_flat), dim=1)
+        else:
+            repeated_input_img_tokens = repeat(input_img_tokens, 'b np d -> (b v_target) np d', v_target=v_target, np=n_patches * v_input)
+            transformer_input = torch.cat((repeated_input_img_tokens, target_pose_tokens), dim=1)
+        
+        
+        
         concat_img_tokens = self.transformer_input_layernorm(transformer_input)
         
         checkpoint_every = self.config.training.grad_checkpoint_every
         transformer_output_tokens = self.pass_layers(concat_img_tokens, gradient_checkpoint=self.training, checkpoint_every=checkpoint_every)
         
-        _, target_image_tokens = transformer_output_tokens.split([v_input * n_patches, n_patches], dim=1)
+        if self.config.training.get("true_cross_attention", False):
+            _, target_image_tokens = transformer_output_tokens.split([v_input * n_patches, v_target * n_patches], dim=1)
+            target_image_tokens = rearrange(target_image_tokens, 'b (v p) d -> (b v) p d', v=v_target)
+
+        else:
+            _, target_image_tokens = transformer_output_tokens.split([v_input * n_patches, n_patches], dim=1)
         
         # Apply sigmoid ONLY in the direct path to map outputs to [0,1]
         rendered_pixels = torch.sigmoid(self.image_token_decoder(target_image_tokens))
@@ -201,9 +213,9 @@ class Images2LatentScene(nn.Module):
         
         return edict(input=input, target=target, loss_metrics=loss_metrics, render=rendered_images)
 
-    def forward_diffusion(self, data_batch):
+    def forward_diffusion(self, data_batch, has_target_image=True):
        
-        input, target = self.process_data(data_batch, has_target_image=True, target_has_input=self.config.training.target_has_input, compute_rays=True)
+        input, target = self.process_data(data_batch, has_target_image=has_target_image, target_has_input=self.config.training.target_has_input, compute_rays=True)
         device, b, v_target = target.image.device, target.image.shape[0], target.image.shape[1]
         
         gt_images = rearrange(target.image * 2.0 - 1.0, "b v c h w -> (b v) c h w")
@@ -227,14 +239,27 @@ class Images2LatentScene(nn.Module):
         time_emb = self.time_embedding(time_proj_emb).unsqueeze(1).expand(-1, n_patches, -1)
         target_tokens_with_time = target_tokens + time_emb
 
-        repeated_input_img_tokens = repeat(input_img_tokens, 'b np d -> (b v_target) np d', v_target=v_target)
-        transformer_input = torch.cat((repeated_input_img_tokens, target_tokens_with_time), dim=1)
+        
+        if self.config.training.get("true_cross_attention", False):
+            target_pose_tokens_flat = rearrange(target_pose_tokens, '(b v) p d -> b (v p) d', b=b)
+            transformer_input = torch.cat((input_img_tokens, target_pose_tokens_flat), dim=1)
+        else:
+            repeated_input_img_tokens = repeat(input_img_tokens, 'b np d -> (b v_target) np d', v_target=v_target)
+            transformer_input = torch.cat((repeated_input_img_tokens, target_tokens_with_time), dim=1)
+            
+        
         concat_img_tokens = self.transformer_input_layernorm(transformer_input)
         
         checkpoint_every = self.config.training.grad_checkpoint_every
         transformer_output_tokens = self.pass_layers(concat_img_tokens, gradient_checkpoint=self.training, checkpoint_every=checkpoint_every)
         
-        _, predicted_noise_tokens = transformer_output_tokens.split([v_input * n_patches, n_patches], dim=1)
+        if self.config.model.get("true_cross_attention", False):
+            _, predicted_noise_tokens = transformer_output_tokens.split([v_input * n_patches, v_target * n_patches], dim=1)
+            predicted_noise_tokens = rearrange(predicted_noise_tokens, 'b (v p) d -> (b v) p d', v=v_target)
+        else: 
+            _, predicted_noise_tokens = transformer_output_tokens.split([v_input * n_patches, n_patches], dim=1)
+
+
         predicted_noise = self.image_token_decoder(predicted_noise_tokens)
         
         height, width, patch_size = target.image_h_w[0], target.image_h_w[1], self.config.model.target_pose_tokenizer.patch_size
