@@ -241,8 +241,8 @@ class Images2LatentScene(nn.Module):
 
         
         if self.config.training.get("true_cross_attention", False):
-            target_pose_tokens_flat = rearrange(target_pose_tokens, '(b v) p d -> b (v p) d', b=b)
-            transformer_input = torch.cat((input_img_tokens, target_pose_tokens_flat), dim=1)
+            target_tokens_with_time_flat = rearrange(target_tokens_with_time, '(b v) p d -> b (v p) d', b=b)
+            transformer_input = torch.cat((input_img_tokens, target_tokens_with_time_flat), dim=1)
         else:
             repeated_input_img_tokens = repeat(input_img_tokens, 'b np d -> (b v_target) np d', v_target=v_target)
             transformer_input = torch.cat((repeated_input_img_tokens, target_tokens_with_time), dim=1)
@@ -253,7 +253,7 @@ class Images2LatentScene(nn.Module):
         checkpoint_every = self.config.training.grad_checkpoint_every
         transformer_output_tokens = self.pass_layers(concat_img_tokens, gradient_checkpoint=self.training, checkpoint_every=checkpoint_every)
         
-        if self.config.model.get("true_cross_attention", False):
+        if self.config.training.get("true_cross_attention", False):
             _, predicted_noise_tokens = transformer_output_tokens.split([v_input * n_patches, v_target * n_patches], dim=1)
             predicted_noise_tokens = rearrange(predicted_noise_tokens, 'b (v p) d -> (b v) p d', v=v_target)
         else: 
