@@ -11,58 +11,9 @@ from utils.metric_utils import visualize_intermediate_results
 from utils.training_utils import create_optimizer, create_lr_scheduler, auto_resume_job, print_rank0
 import random
 import litdata as ld
-from fvcore.nn import FlopCountAnalysis
+import torch.profiler
 
 
-def analyze_flops(model, dataloader, config, ddp_info, amp_dtype_mapping):
-    """
-    A self-contained function to calculate GFLOPs and log them to wandb.
-    """
-    if not ddp_info.is_main_process:
-        return
-
-    print_rank0("--- Starting GFLOPs Analysis ---")
-    
-    sample_batch = None
-    dataloader_iter = iter(dataloader)
-    while sample_batch is None:
-        try:
-            # The collate_fn can return None, so we loop until we get a valid batch
-            sample_batch = next(dataloader_iter)
-        except StopIteration:
-            print_rank0("Could not get a batch for FLOPs analysis. Dataloader exhausted.")
-            return
-    
-    sample_batch = {k: v.to(ddp_info.device) if isinstance(v, torch.Tensor) else v for k, v in sample_batch.items()}
-
-    model_for_flops = model.module if isinstance(model, DDP) else model
-    model_for_flops.eval()
-
-    original_pass_layers = model_for_flops.pass_layers
-    model_for_flops.pass_layers = lambda tokens, **kwargs: original_pass_layers(tokens, gradient_checkpoint=False)
-
-    try:
-        with torch.no_grad(), torch.autocast(
-            enabled=config.training.use_amp,
-            device_type="cuda",
-            dtype=amp_dtype_mapping[config.training.amp_dtype],
-        ):
-            flops_analyzer = FlopCountAnalysis(model_for_flops, (sample_batch,))
-            total_flops = flops_analyzer.total()
-            
-        gmacs = total_flops / 1e9
-        gflops = gmacs * 2
-
-        print_rank0(f"Model Configuration: {config.training.num_input_views} Input Views, {config.training.num_target_views} Target Views")
-        print_rank0(f"Autocast dtype: {str(amp_dtype_mapping[config.training.amp_dtype])}")
-        print_rank0(f"Total MACs for one forward pass: {gmacs:.4f} G")
-        print_rank0(f"Estimated GFLOPs: {gflops:.4f} G")
-        wandb.summary["GFLOPs"] = gflops
-
-    finally:
-        model_for_flops.pass_layers = original_pass_layers
-        model_for_flops.train()
-        print_rank0("--- GFLOPs Analysis Complete ---")
 
 
 class LitDataCollate:
@@ -152,6 +103,64 @@ class ViewManager:
             setattr(self.config.training, key, value)
 
 
+
+def analyze_flops(model, dataloader, config, ddp_info, amp_dtype_mapping):
+    if not ddp_info.is_main_process:
+        return
+
+    print_rank0("--- Starting GFLOPs Analysis with torch.profiler ---")
+
+    # Get a single valid batch from the dataloader
+    sample_batch = None
+    dataloader_iter = iter(dataloader)
+    while sample_batch is None:
+        try:
+            sample_batch = next(dataloader_iter)
+        except StopIteration:
+            print_rank0("Could not get a batch for FLOPs analysis. Dataloader exhausted.")
+            return
+    sample_batch = {k: v.to(ddp_info.device) if isinstance(v, torch.Tensor) else v for k, v in sample_batch.items()}
+
+    model_for_flops = model.module if isinstance(model, DDP) else model
+    model_for_flops.eval()
+
+   
+    original_pass_layers = model_for_flops.pass_layers
+    model_for_flops.pass_layers = lambda tokens, **kwargs: original_pass_layers(tokens, **kwargs)
+
+    try:
+        with torch.no_grad(), torch.autocast(
+            enabled=config.training.use_amp,
+            device_type="cuda",
+            dtype=amp_dtype_mapping[config.training.amp_dtype],
+        ):
+         
+            with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                with_flops=True
+            ) as prof:
+                _ = model_for_flops(sample_batch)
+
+            
+            total_flops = sum(k.flops for k in prof.key_averages())
+
+
+        gflops = total_flops / 1e9
+        
+
+        print_rank0(f"Model Config: {config.training.num_input_views} Input Views, {config.training.num_target_views} Target Views")
+        print_rank0(f" GFLOPs: {gflops} G")
+        wandb.summary["GFLOPs"] = gflops
+
+    finally:
+        # Restore the original model state
+        model_for_flops.pass_layers = original_pass_layers
+        model_for_flops.train()
+        print_rank0("--- GFLOPs Analysis Complete ---")
+
+
+
+
 # --- Main Execution ---
 config = init_config()
 view_manager = ViewManager(config)
@@ -167,12 +176,11 @@ torch.backends.cuda.matmul.allow_tf32 = config.training.use_tf32
 torch.backends.cudnn.allow_tf32 = config.training.use_tf32
 amp_dtype_mapping = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32, 'tf32': torch.float32}
 
-# --- Dataloader Setup ---
+# --- Dataloader Setup 
 print_rank0("Initializing LitData StreamingDataset...")
 job_id = os.environ.get("SLURM_JOB_ID", f"local_{int(time.time())}")
 
-# --- RAM CACHING IMPLEMENTATION ---
-# Use the RAM Disk for caching to avoid HDD bottlenecks.
+
 cache_dir = f"/dev/shm/litdata_cache_{job_id}"
 if ddp_info.is_main_process:
     os.makedirs(cache_dir, exist_ok=True)
@@ -185,7 +193,7 @@ dataset = ld.StreamingDataset(
     max_cache_size="50GB",  # Allocate 50GB of RAM for caching
     shuffle=True,
 )
-# --- END RAM CACHING IMPLEMENTATION ---
+
 
 
 if len(dataset) == 0:
@@ -206,7 +214,7 @@ dataloader = ld.StreamingDataLoader(
 )
 dataloader_iter = iter(dataloader)
 print_rank0(f"Dataloader is ready. Found {len(dataset)} total items.")
-# --- End Dataloader Setup ---
+
 
 total_train_steps = config.training.train_steps
 grad_accum_steps = config.training.grad_accum_steps

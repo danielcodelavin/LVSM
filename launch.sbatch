@@ -1,18 +1,17 @@
 #!/bin/bash
-#SBATCH --job-name="diff original loss re10k chunked lvsm"
+#SBATCH --job-name="diff re10k mse crossattention vggtattention noextrapol"
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=96G
 #SBATCH --mail-type=NONE
 #SBATCH --gres=gpu:nvidia_h100_nvl:1
-#SBATCH --time=7-12:00:00
+#SBATCH --time=6-12:00:00
 #SBATCH --output=/home/stud/lavingal/storage/slurm/lavingal/run_reports/slurm-%j.out
 #SBATCH --error=/home/stud/lavingal/storage/slurm/lavingal/run_reports/slurm-%j.out
 eval "$(conda shell.bash hook)"
-conda activate LVSM
+mamba activate LVSM
 
 echo "========================================="
 echo "SLURM JOB: Running on host $(hostname)"
-echo "SLURM JOB: Using Conda Env: $CONDA_DEFAULT_ENV"
 echo "SLURM JOB: Python path: $(which python)"
 echo "========================================="
 

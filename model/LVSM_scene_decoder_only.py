@@ -6,8 +6,8 @@ from easydict import EasyDict as edict
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat
 import traceback
-from utils import camera_utils, data_utils 
-from .transformer import QK_Norm_TransformerBlock, init_weights
+from utils import camera_utils, data_utils
+from .transformer import QK_Norm_TransformerBlock, init_weights, AlternatingAttentionBlock, SourceTargetAttentionBlock
 from .loss import LossComputer
 
 # New imports for diffusion
@@ -42,8 +42,6 @@ class Images2LatentScene(nn.Module):
             self.time_proj = nn.Linear(1, d_model)
             self.time_proj.apply(lambda module: init_weights(module, 0.02))
 
-            # This is the main embedding network, which now correctly receives
-            # a d_model-dimensional input from the projection layer.
             self.time_embedding = nn.Sequential(
                 nn.Linear(d_model, d_model * 4),
                 nn.SiLU(),
@@ -73,21 +71,18 @@ class Images2LatentScene(nn.Module):
 
     def _init_tokenizers(self):
         """Initialize the image and target pose tokenizers, and image token decoder"""
-        # Image tokenizer (expects 9 channels: 3 image + 6 pose)
         self.image_tokenizer = self._create_tokenizer(
             in_channels = self.config.model.image_tokenizer.in_channels,
             patch_size = self.config.model.image_tokenizer.patch_size,
             d_model = self.config.model.transformer.d
         )
         
-        # Target pose tokenizer (expects 6 channels: pose only)
         self.target_pose_tokenizer = self._create_tokenizer(
             in_channels = self.config.model.target_pose_tokenizer.in_channels,
             patch_size = self.config.model.target_pose_tokenizer.patch_size,
             d_model = self.config.model.transformer.d
         )
         
-        # Image token decoder (decode image tokens into pixels)
         self.image_token_decoder = nn.Sequential(
             nn.LayerNorm(self.config.model.transformer.d, bias=False),
             nn.Linear(
@@ -95,8 +90,6 @@ class Images2LatentScene(nn.Module):
                 (self.config.model.target_pose_tokenizer.patch_size**2) * 3,
                 bias=False,
             ),
-            # sigmoid is now applied conditionally
-            # in the forward_direct path, as noise prediction should be unbounded.
         )
         self.image_token_decoder.apply(init_weights)
 
@@ -104,11 +97,27 @@ class Images2LatentScene(nn.Module):
     def _init_transformer(self):
         """Initialize transformer blocks"""
         config = self.config.model.transformer
-        use_qk_norm = config.get("use_qk_norm", False)
-        self.transformer_blocks = [
-            QK_Norm_TransformerBlock(config.d, config.d_head, use_qk_norm=use_qk_norm) 
+        train_config = self.config.training
+
+        use_dual_attention = config.get("vggt_dual_attention", False)
+        is_true_cross_attention = train_config.get("true_cross_attention", False)
+
+        if use_dual_attention:
+            if is_true_cross_attention:
+                print("INFO: Using AlternatingAttentionBlock for 'true_cross_attention' mode.")
+                BlockClass = AlternatingAttentionBlock
+            else:
+                print("INFO: Using SourceTargetAttentionBlock for 'repeat' mode.")
+                BlockClass = SourceTargetAttentionBlock
+        else:
+            print("INFO: Using standard QK_Norm_TransformerBlock.")
+            BlockClass = QK_Norm_TransformerBlock
+
+        self.transformer_blocks = nn.ModuleList([
+            BlockClass(config.d, config.d_head, use_qk_norm=config.get("use_qk_norm", False)) 
             for _ in range(config.n_layer)
-        ]
+        ])
+        
         if config.get("special_init", False):
             for idx, block in enumerate(self.transformer_blocks):
                 weight_init_std = 0.02 / (2 * (idx + 1))**0.5 if config.depth_init else 0.02 / (2 * config.n_layer)**0.5
@@ -127,22 +136,28 @@ class Images2LatentScene(nn.Module):
             self.loss_computer.eval()
 
 
-    def pass_layers(self, input_tokens, gradient_checkpoint=False, checkpoint_every=1):
+    def pass_layers(self, input_tokens, gradient_checkpoint=False, checkpoint_every=1, **kwargs):
         """Helper function to pass input tokens through all transformer blocks with optional gradient checkpointing."""
         num_layers = len(self.transformer_blocks)
         if not gradient_checkpoint:
             for layer in self.transformer_blocks:
-                input_tokens = layer(input_tokens)
+                input_tokens = layer(input_tokens, **kwargs)
             return input_tokens
-        def _process_layer_group(tokens, start_idx, end_idx):
-            for idx in range(start_idx, end_idx):
-                tokens = self.transformer_blocks[idx](tokens)
-            return tokens
-        for start_idx in range(0, num_layers, checkpoint_every):
-            end_idx = min(start_idx + checkpoint_every, num_layers)
-            input_tokens = torch.utils.checkpoint.checkpoint(
-                _process_layer_group, input_tokens, start_idx, end_idx, use_reentrant=False
-            )
+
+        
+        def _create_checkpoint_fn(block):
+            def _checkpoint_fn(x):
+                return block(x, **kwargs)
+            return _checkpoint_fn
+        
+        for i in range(0, num_layers, checkpoint_every):
+            end_idx = min(i + checkpoint_every, num_layers)
+            for j in range(i, end_idx):
+                 input_tokens = torch.utils.checkpoint.checkpoint(
+                    _create_checkpoint_fn(self.transformer_blocks[j]),
+                    input_tokens,
+                    use_reentrant=False,
+                )
         return input_tokens
             
 
@@ -153,8 +168,6 @@ class Images2LatentScene(nn.Module):
         if images is None:
             return pose_cond
         else:
-            # When not using diffusion, input images are in [0, 1] and need to be scaled to [-1, 1].
-            # When using diffusion, the input (noisy) images are already in the [-1, 1] range.
             if not self.config.training.get("use_diffusion", False):
                  images = images * 2.0 - 1.0
             return torch.cat([images, pose_cond], dim=2)
@@ -164,7 +177,7 @@ class Images2LatentScene(nn.Module):
         """Main forward pass that toggles between direct and diffusion paths."""
         use_diffusion = self.config.training.get("use_diffusion", False)
         if use_diffusion:
-            return self.forward_diffusion(data_batch)
+            return self.forward_diffusion(data_batch, has_target_image)
         else:
             return self.forward_direct(data_batch, has_target_image)
 
@@ -177,7 +190,6 @@ class Images2LatentScene(nn.Module):
         _, n_patches, d = input_img_tokens.size()
         input_img_tokens = input_img_tokens.reshape(b, v_input * n_patches, d)
         
-        # FIX: Corrected typo from target.ray_oxq to target.ray_o
         target_pose_cond= self.get_posed_input(ray_o=target.ray_o, ray_d=target.ray_d)
         b, v_target, _, _, _ = target_pose_cond.size()
         target_pose_tokens = self.target_pose_tokenizer(target_pose_cond)
@@ -189,21 +201,29 @@ class Images2LatentScene(nn.Module):
             repeated_input_img_tokens = repeat(input_img_tokens, 'b np d -> (b v_target) np d', v_target=v_target, np=n_patches * v_input)
             transformer_input = torch.cat((repeated_input_img_tokens, target_pose_tokens), dim=1)
         
-        
-        
         concat_img_tokens = self.transformer_input_layernorm(transformer_input)
         
+        block_type = type(self.transformer_blocks[0])
+        kwargs = {}
+        if block_type is AlternatingAttentionBlock:
+            kwargs = {'num_frames': v_input + v_target}
+        elif block_type is SourceTargetAttentionBlock:
+            kwargs = {'source_token_len': v_input * n_patches}
+
         checkpoint_every = self.config.training.grad_checkpoint_every
-        transformer_output_tokens = self.pass_layers(concat_img_tokens, gradient_checkpoint=self.training, checkpoint_every=checkpoint_every)
+        transformer_output_tokens = self.pass_layers(
+            concat_img_tokens, 
+            gradient_checkpoint=self.training, 
+            checkpoint_every=checkpoint_every,
+            **kwargs
+        )
         
         if self.config.training.get("true_cross_attention", False):
             _, target_image_tokens = transformer_output_tokens.split([v_input * n_patches, v_target * n_patches], dim=1)
             target_image_tokens = rearrange(target_image_tokens, 'b (v p) d -> (b v) p d', v=v_target)
-
         else:
             _, target_image_tokens = transformer_output_tokens.split([v_input * n_patches, n_patches], dim=1)
         
-        # Apply sigmoid ONLY in the direct path to map outputs to [0,1]
         rendered_pixels = torch.sigmoid(self.image_token_decoder(target_image_tokens))
         
         height, width, patch_size = target.image_h_w[0], target.image_h_w[1], self.config.model.target_pose_tokenizer.patch_size
@@ -214,7 +234,6 @@ class Images2LatentScene(nn.Module):
         return edict(input=input, target=target, loss_metrics=loss_metrics, render=rendered_images)
 
     def forward_diffusion(self, data_batch, has_target_image=True):
-       
         input, target = self.process_data(data_batch, has_target_image=has_target_image, target_has_input=self.config.training.target_has_input, compute_rays=True)
         device, b, v_target = target.image.device, target.image.shape[0], target.image.shape[1]
         
@@ -239,26 +258,35 @@ class Images2LatentScene(nn.Module):
         time_emb = self.time_embedding(time_proj_emb).unsqueeze(1).expand(-1, n_patches, -1)
         target_tokens_with_time = target_tokens + time_emb
 
-        
         if self.config.training.get("true_cross_attention", False):
             target_tokens_with_time_flat = rearrange(target_tokens_with_time, '(b v) p d -> b (v p) d', b=b)
             transformer_input = torch.cat((input_img_tokens, target_tokens_with_time_flat), dim=1)
         else:
             repeated_input_img_tokens = repeat(input_img_tokens, 'b np d -> (b v_target) np d', v_target=v_target)
             transformer_input = torch.cat((repeated_input_img_tokens, target_tokens_with_time), dim=1)
-            
         
         concat_img_tokens = self.transformer_input_layernorm(transformer_input)
         
+        block_type = type(self.transformer_blocks[0])
+        kwargs = {}
+        if block_type is AlternatingAttentionBlock:
+            kwargs = {'num_frames': v_input + v_target}
+        elif block_type is SourceTargetAttentionBlock:
+            kwargs = {'source_token_len': v_input * n_patches}
+
         checkpoint_every = self.config.training.grad_checkpoint_every
-        transformer_output_tokens = self.pass_layers(concat_img_tokens, gradient_checkpoint=self.training, checkpoint_every=checkpoint_every)
+        transformer_output_tokens = self.pass_layers(
+            concat_img_tokens, 
+            gradient_checkpoint=self.training, 
+            checkpoint_every=checkpoint_every,
+            **kwargs
+        )
         
         if self.config.training.get("true_cross_attention", False):
             _, predicted_noise_tokens = transformer_output_tokens.split([v_input * n_patches, v_target * n_patches], dim=1)
             predicted_noise_tokens = rearrange(predicted_noise_tokens, 'b (v p) d -> (b v) p d', v=v_target)
         else: 
             _, predicted_noise_tokens = transformer_output_tokens.split([v_input * n_patches, n_patches], dim=1)
-
 
         predicted_noise = self.image_token_decoder(predicted_noise_tokens)
         
@@ -328,6 +356,7 @@ class Images2LatentScene(nn.Module):
         _, n_patches, d = target_pose_tokens.size()
         target_pose_tokens = target_pose_tokens.reshape(bs, num_views * n_patches, d)
 
+        block_type = type(self.transformer_blocks[0])
         video_rendering_list, view_chunk_size = [], 4
         for cur_chunk in range(0, num_views, view_chunk_size):
             cur_view_chunk_size = min(view_chunk_size, num_views - cur_chunk)
@@ -336,7 +365,12 @@ class Images2LatentScene(nn.Module):
             cur_target_pose_tokens = rearrange(target_pose_tokens[:, start_idx:end_idx,: ], "b (v_chunk p) d -> (b v_chunk) p d", v_chunk=cur_view_chunk_size, p=n_patches)
             cur_concat_input_tokens = torch.cat((repeated_input_img_tokens, cur_target_pose_tokens,), dim=1)
             cur_concat_input_tokens = self.transformer_input_layernorm(cur_concat_input_tokens)
-            transformer_output_tokens = self.pass_layers(cur_concat_input_tokens, gradient_checkpoint=False)
+            
+            kwargs = {}
+            if block_type is SourceTargetAttentionBlock:
+                kwargs = {'source_token_len': v_input * n_patches}
+
+            transformer_output_tokens = self.pass_layers(cur_concat_input_tokens, gradient_checkpoint=False, **kwargs)
             _, pred_target_image_tokens = transformer_output_tokens.split([v_input * n_patches, n_patches], dim=1)
             
             video_rendering = torch.sigmoid(self.image_token_decoder(pred_target_image_tokens))
@@ -384,6 +418,8 @@ class Images2LatentScene(nn.Module):
         noisy_frames = torch.randn((bs, num_frames, 3, h, w), device=device)
         self.scheduler.set_timesteps(self.config.diffusion.num_train_timesteps)
 
+        block_type = type(self.transformer_blocks[0])
+
         for t in self.scheduler.timesteps:
             print(f"Sampling timestep {t}/{self.scheduler.config.num_train_timesteps}", end='\r')
             posed_noisy_frames = self.get_posed_input(images=noisy_frames, ray_o=rendering_ray_o, ray_d=rendering_ray_d)
@@ -399,17 +435,19 @@ class Images2LatentScene(nn.Module):
             repeated_input_img_tokens = repeat(input_img_tokens, 'b np d -> (b v_target) np d', v_target=num_frames)
             transformer_input = torch.cat((repeated_input_img_tokens, target_tokens_with_time), dim=1)
             concat_img_tokens = self.transformer_input_layernorm(transformer_input)
-
-            transformer_output_tokens = self.pass_layers(concat_img_tokens, gradient_checkpoint=False)
+        
+            kwargs = {}
+            if block_type is SourceTargetAttentionBlock:
+                kwargs = {'source_token_len': v_input * n_patches}
+            
+            transformer_output_tokens = self.pass_layers(concat_img_tokens, gradient_checkpoint=False, **kwargs)
             _, predicted_noise_tokens = transformer_output_tokens.split([v_input * n_patches, n_patches], dim=1)
 
             predicted_noise = self.image_token_decoder(predicted_noise_tokens)
             
-            # --- FIX: Replaced hardcoded patch size with value from config ---
             patch_size = self.config.model.target_pose_tokenizer.patch_size
             predicted_noise = rearrange(predicted_noise, "(b v) (h w) (p1 p2 c) -> b v c (h p1) (w p2)", b=bs, v=num_frames, h=h//patch_size, w=w//patch_size, p1=patch_size, p2=patch_size, c=3)
             
-            # Here, t is a scalar, so scheduler.step works correctly.
             noisy_frames = self.scheduler.step(predicted_noise.squeeze(0), t, noisy_frames.squeeze(0)).prev_sample.unsqueeze(0)
             
         video_rendering = torch.clamp(noisy_frames, -1.0, 1.0) / 2.0 + 0.5
@@ -432,8 +470,6 @@ class Images2LatentScene(nn.Module):
         try:
             checkpoint = torch.load(ckpt_paths[-1], map_location="cpu", weights_only=True)
             
-            # --- FIX: Intelligently find the model state dictionary ---
-            # Check for common key names for the model's state dictionary
             if 'model' in checkpoint:
                 state_dict = checkpoint['model']
             elif 'state_dict' in checkpoint:
@@ -441,13 +477,10 @@ class Images2LatentScene(nn.Module):
             elif 'model_state_dict' in checkpoint:
                 state_dict = checkpoint['model_state_dict']
             else:
-                # If no known key is found, assume the checkpoint itself is the state_dict
                 state_dict = checkpoint
 
-            # Load the found state dictionary
             status = self.load_state_dict(state_dict, strict=False)
             print("Model load status:", status)
-            # --- END OF FIX ---
             
             print(f"Successfully loaded checkpoint from {ckpt_paths[-1]}")
             return 0

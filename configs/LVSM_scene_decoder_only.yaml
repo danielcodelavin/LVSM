@@ -17,6 +17,8 @@ model:
     special_init: true
     depth_init: true
     use_qk_norm: true
+    ### CUSTOM
+    vggt_dual_attention: True
 
 diffusion:
   num_train_timesteps: 1000
@@ -34,10 +36,10 @@ training:
   allowed_gradnorm_factor: 5
   center_crop: true
   scene_scale_factor: 1.35
-  checkpoint_dir: ./experiments/checkpoints/re10k_diffusion_crossattention_noextrapol_regularmse
+  checkpoint_dir: ./experiments/checkpoints/re10k_diffusion_crossattention_vggtattention_noextrapol_regularmse
   checkpoint_every: 10000
   dataset_name: data.dataset_scene.Dataset
-  dataset_path: /storage/slurm/lavingal/lavingal/LVSM/datasets/re10k_train_chunks_all_views
+  dataset_path: /storage/user/lavingal/re10k_train_chunks_all_views
   grad_accum_steps: 1
   grad_checkpoint_every: 1
   grad_clip_norm: 1.0
@@ -62,6 +64,7 @@ training:
   
   
   #custom stuff
+  
   uniform_crop_size: False  # FALSE IS ORIGINAL LVSM BEHAVIOUR - TRUE IS FOR NEW DATASETS THAT DO NOT HAVE SAME ASPECT RATIO
   random_sample_views: False
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - TRUE MEANS WE RANDOMLY SAMPLE VIEWS - IN FALSE WE ONLY TAKE TARGET VIEWS IN BETWEEN THE INPUT VIEWS
@@ -71,6 +74,9 @@ training:
   use_regular_mse_for_diffusion: True
   true_cross_attention: True
 
+
+  #end of custom stuff
+
   target_has_input: true
   use_amp: true
   use_rel_pose: false
@@ -79,7 +85,7 @@ training:
     max_frame_dist: 192
     min_frame_dist: 25
   vis_every: 1000
-  wandb_exp_name: re10k_diffusion_noextrapol_crossattention_regularmse
+  wandb_exp_name: re10k_diffusion_crossattention_vggtattention_noextrapol_regularmse
   wandb_log_every: 50
   
   wandb_project: LVSM

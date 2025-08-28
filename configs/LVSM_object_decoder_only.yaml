@@ -17,6 +17,7 @@ model:
     special_init: true
     depth_init: true
     use_qk_norm: true
+    vggt_dual_attention: false
 
 diffusion:
   num_train_timesteps: 1000

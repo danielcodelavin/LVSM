@@ -21,6 +21,60 @@ def init_weights(module, std=0.02):
         if isinstance(module, nn.Linear) and module.bias is not None:
             torch.nn.init.zeros_(module.bias)
 
+## true cross attention + vggt dual attention
+class AlternatingAttentionBlock(nn.Module):
+    def __init__(self, dim, head_dim, mlp_ratio=4, use_qk_norm=True, **kwargs):
+        super().__init__()
+        self.norm_frame = nn.LayerNorm(dim)
+        self.norm_global = nn.LayerNorm(dim)
+        self.norm_mlp = nn.LayerNorm(dim)
+
+        self.attn_frame = QK_Norm_SelfAttention(dim, head_dim, use_qk_norm=use_qk_norm)
+        self.attn_global = QK_Norm_SelfAttention(dim, head_dim, use_qk_norm=use_qk_norm)
+        self.mlp = MLP(dim=dim, mlp_ratio=mlp_ratio)
+
+    def forward(self, x, num_frames):
+        # 1. Frame-wise Attention (for equal groups)
+        x_framed = rearrange(self.norm_frame(x), 'b (n k) c -> (b n) k c', n=num_frames)
+        attn_out = self.attn_frame(x_framed)
+        x = x + rearrange(attn_out, '(b n) k c -> b (n k) c', n=num_frames)
+
+        # 2. Global Attention
+        x = x + self.attn_global(self.norm_global(x))
+
+        # 3. MLP
+        x = x + self.mlp(self.norm_mlp(x))
+        return x
+
+
+### true_cross_attention: false mode + vggt dual attention
+class SourceTargetAttentionBlock(nn.Module):
+    def __init__(self, dim, head_dim, mlp_ratio=4, use_qk_norm=True, **kwargs):
+        super().__init__()
+        self.norm_frame = nn.LayerNorm(dim)
+        self.norm_global = nn.LayerNorm(dim)
+        self.norm_mlp = nn.LayerNorm(dim)
+        
+        self.attn_frame = QK_Norm_SelfAttention(dim, head_dim, use_qk_norm=use_qk_norm)
+        self.attn_global = QK_Norm_SelfAttention(dim, head_dim, use_qk_norm=use_qk_norm)
+        self.mlp = MLP(dim=dim, mlp_ratio=mlp_ratio)
+
+    def forward(self, x, source_token_len):
+        # 1. Frame-wise Attention (for two unequal groups)
+        x_norm = self.norm_frame(x)
+        source_tokens, target_tokens = torch.split(x_norm, [source_token_len, x.shape[1] - source_token_len], dim=1)
+        
+        attn_out_source = self.attn_frame(source_tokens)
+        attn_out_target = self.attn_frame(target_tokens)
+        
+        x = x + torch.cat([attn_out_source, attn_out_target], dim=1)
+
+        # 2. Global Attention
+        x = x + self.attn_global(self.norm_global(x))
+        
+        # 3. MLP
+        x = x + self.mlp(self.norm_mlp(x))
+        return x
 
 
 # src: https://github.com/pytorch/benchmark/blob/main/torchbenchmark/models/llama/model.py#L28
@@ -183,7 +237,6 @@ class SubsetAttention(nn.Module):
         """
         super().__init__()
         assert dim % head_dim == 0, f"Token dimension {dim} should be divisible by head dimension {head_dim}"
-        
         self.dim = dim
         self.head_dim = head_dim
         self.num_heads = dim // head_dim
