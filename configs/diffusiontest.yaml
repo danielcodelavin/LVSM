@@ -30,17 +30,18 @@ diffusion:
 training:
   amp_dtype: bf16
   api_key_path: ./configs/api_keys.yaml
-  batch_size_per_gpu: 16     
+  batch_size_per_gpu: 32
   beta1: 0.9
   beta2: 0.95
   allowed_gradnorm_factor: 5
   center_crop: true
   scene_scale_factor: 1.35
-  checkpoint_dir: ./newexperiments/checkpoints/model5_flexLVSM_crossattention_350k
+  checkpoint_dir: ./newexperiments/checkpoints/model2_objadlvsm_cross
   checkpoint_every: 3000
   dataset_name: data.dataset_scene.Dataset
-  dataset_path: /storage/user/lavingal/objaverseplus_chunked
-  grad_accum_steps: 4
+  #dataset_path: /storage/user/lavingal/objaverseplus_chunked
+  dataset_path: /storage/slurm/lavingal/lavingal/LVSM/datasets/gso_chunked
+  grad_accum_steps: 2
   grad_checkpoint_every: 1
   grad_clip_norm: 1.0
 
@@ -50,7 +51,7 @@ training:
   perceptual_loss_weight: 0.5
 
   lr: 0.0004
-  train_steps: 350000
+  train_steps: 500000
 
 
   num_input_views: 2
@@ -70,9 +71,10 @@ training:
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - TRUE MEANS WE RANDOMLY SAMPLE VIEWS - IN FALSE WE ONLY TAKE TARGET VIEWS IN BETWEEN THE INPUT VIEWS
   variable_amount_of_views: False 
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - False means we use default viewcount - whats in the config - with True we regenerate amount of views for each batch
-  use_diffusion: False
+  use_diffusion: True
   use_regular_mse_for_diffusion: True
   true_cross_attention: True
+
 
   #end of custom stuff
 
@@ -84,7 +86,7 @@ training:
     max_frame_dist: 192
     min_frame_dist: 25
   vis_every: 1000
-  wandb_exp_name: model5_flexLVSM_crossattention_350k
+  wandb_exp_name: model2_Diff_cross
   wandb_log_every: 50
   
   wandb_project: LVSM
@@ -92,16 +94,16 @@ training:
   weight_decay: 0.05
 
 
+inference_out_dir: ./newexperiments/evaluation/diffusiontest_objalvsm/
 # inference / evaluation
 inference:
   if_inference: False
-  compute_metrics: False
+  compute_metrics: True
   view_idx_file_path: ./data/evaluation_index_re10k.json
   render_video: False
+  inference_out_dir: ./newexperiments/evaluation/diffusiontest_objalvsm/
   render_video_config:
     traj_type: interpolate
     num_frames: 60
     loop_video: True 
     order_poses: False
-
-  

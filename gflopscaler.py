@@ -4,7 +4,7 @@
 # Model 1 (baseline)
 model1_name = "Model-1"
 model1_gflops = 43814
-model1_train_steps = 350000
+model1_train_steps = 250000
 
 # Model 2
 model2_name = "Model-2"

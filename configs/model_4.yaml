@@ -36,11 +36,11 @@ training:
   allowed_gradnorm_factor: 5
   center_crop: true
   scene_scale_factor: 1.35
-  checkpoint_dir: ./newexperiments/checkpoints/model1_objalvsm
+  checkpoint_dir: ./newexperiments/checkpoints/model4_percept_objadiffcrossvggt
   checkpoint_every: 3000
   dataset_name: data.dataset_scene.Dataset
   dataset_path: /storage/user/lavingal/objaverseplus_chunked
-  grad_accum_steps: 
+  grad_accum_steps: 2
   grad_checkpoint_every: 1
   grad_clip_norm: 1.0
 
@@ -66,7 +66,7 @@ training:
   #custom stuff
   
   uniform_crop_size: False  # FALSE IS ORIGINAL LVSM BEHAVIOUR - TRUE IS FOR NEW DATASETS THAT DO NOT HAVE SAME ASPECT RATIO
-  random_sample_views: False
+  random_sample_views: True
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - TRUE MEANS WE RANDOMLY SAMPLE VIEWS - IN FALSE WE ONLY TAKE TARGET VIEWS IN BETWEEN THE INPUT VIEWS
   variable_amount_of_views: False 
   # FALSE IS ORIGINAL LVSM BEHAVIOUR - False means we use default viewcount - whats in the config - with True we regenerate amount of views for each batch
@@ -85,7 +85,7 @@ training:
     max_frame_dist: 192
     min_frame_dist: 25
   vis_every: 1000
-  wandb_exp_name: re10k_diffusion_crossattention_vggtattention_noextrapol_regularmse
+  wandb_exp_name: model4_pecept_objadiffcrossvggt
   wandb_log_every: 50
   
   wandb_project: LVSM

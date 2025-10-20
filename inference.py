@@ -8,6 +8,7 @@ from utils.metric_utils import export_results, summarize_evaluation
 import time
 import litdata as ld
 import random
+import torchvision.transforms.functional as TF
 
 # Load config and read(override) arguments from CLI
 config = init_config()
@@ -29,18 +30,20 @@ amp_dtype_mapping = {
     'tf32': torch.float32
 }
 
-
 class LitDataCollate:
     """
-    A robust collate function that filters each batch for valid samples
-    before performing view selection and stacking.
+    A robust collate function that filters each batch for valid samples,
+    performs view selection, resizes images to the target resolution,
+    and then stacks them into a final batch tensor.
     """
     def __init__(self, config):
         self.config = config
+        # Get the target image size from the model's config to avoid hardcoding.
+        self.target_size = self.config.model.image_tokenizer.image_size
 
     def __call__(self, batch):
         min_views_required = self.config.training.num_views
-        
+
         valid_samples = [s for s in batch if s and 'image' in s and s['image'].shape[0] >= min_views_required]
 
         if not valid_samples:
@@ -56,7 +59,7 @@ class LitDataCollate:
                 view_selector_config = self.config.training.view_selector
                 min_frame_dist = view_selector_config.get("min_frame_dist", 25)
                 max_frame_dist = min(num_available_views - 1, view_selector_config.get("max_frame_dist", 100))
-                
+
                 if max_frame_dist <= min_frame_dist:
                     image_indices = random.sample(range(num_available_views), num_views_to_sample)
                 else:
@@ -64,7 +67,7 @@ class LitDataCollate:
                     start_frame = random.randint(0, num_available_views - frame_dist - 1)
                     end_frame = start_frame + frame_dist
                     num_intermediate_views = num_views_to_sample - 2
-                    
+
                     if end_frame > start_frame + 1 and (end_frame - start_frame - 1) >= num_intermediate_views:
                         sampled_frames = random.sample(range(start_frame + 1, end_frame), num_intermediate_views)
                         image_indices = [start_frame, end_frame] + sampled_frames
@@ -72,16 +75,32 @@ class LitDataCollate:
                         image_indices = random.sample(range(num_available_views), num_views_to_sample)
             else:
                 image_indices = random.sample(range(num_available_views), num_views_to_sample)
-            
+
             for key, value in sample.items():
-                if isinstance(value, torch.Tensor):
+                if key == 'image':
+
+                    original_images = value[image_indices]
+
+                    # 2. Resize each selected image to the target size from the config.
+                    resized_images = torch.stack(
+                        [TF.resize(img, [self.target_size, self.target_size], antialias=True) for img in original_images]
+                    )
+
+
+                    processed_batch[key].append(resized_images)
+
+
+                elif isinstance(value, torch.Tensor):
+                    # For other tensors (like camera poses), just select the correct indices.
                     processed_batch[key].append(value[image_indices])
                 elif key == "scene_name":
+                    # For metadata like scene_name, just append it.
                     processed_batch[key].append(value)
-        
+
         if not processed_batch.get("image"):
             return None
 
+        # Stack all samples into a single batch tensor.
         final_batch = {}
         for key, value_list in processed_batch.items():
             if value_list and isinstance(value_list[0], torch.Tensor):
@@ -89,7 +108,6 @@ class LitDataCollate:
             else:
                 final_batch[key] = value_list
         return final_batch
-
 
 # --- Dataloader Setup ---
 print("Initializing LitData StreamingDataset for inference...")
@@ -162,13 +180,19 @@ with torch.no_grad(), torch.autocast(
             
         batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in batch.items()}
         
-        # The model's forward and render_video methods will internally select the
-        # direct or diffusion path based on `config.training.use_diffusion`.
-        result = model(batch, has_target_image=False)
+        
+        need_target_images = config.inference.get("compute_metrics", False)
+
+        # Dispatch to the correct inference function based on the config.
+        if config.training.get("use_diffusion", False):
+            # Pass the flag to sample_batch_diffusion
+            result = model.module.sample_batch_diffusion(batch, has_target_image=need_target_images)
+        else:
+            # Pass the flag to the model's forward pass
+            result = model(batch, has_target_image=need_target_images)
         
         if config.inference.get("render_video", False):
             result = model.module.render_video(result, **config.inference.render_video_config)
-            
         export_results(result, config.inference_out_dir, compute_metrics=config.inference.get("compute_metrics"))
     torch.cuda.empty_cache()
 

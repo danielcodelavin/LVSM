@@ -93,16 +93,16 @@ training:
   weight_decay: 0.05
 
 
+inference_out_dir: ./newexperiments/evaluation/model1_objalvsm/
 # inference / evaluation
 inference:
   if_inference: False
-  compute_metrics: False
+  compute_metrics: True
   view_idx_file_path: ./data/evaluation_index_re10k.json
   render_video: False
+  inference_out_dir: ./newexperiments/evaluation/model2_objalvsm/
   render_video_config:
     traj_type: interpolate
     num_frames: 60
     loop_video: True 
     order_poses: False
-
-  

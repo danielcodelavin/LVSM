@@ -384,6 +384,99 @@ class Images2LatentScene(nn.Module):
         return data_batch
 
     @torch.no_grad()
+    def sample_batch_diffusion(self, data_batch, has_target_image=False):
+        """
+        Runs the DDPM sampling loop for a batch of target views from the dataloader.
+        This is the correct inference path for diffusion models to generate metrics.
+        
+        [FIXED to respect 'true_cross_attention' config flag]
+        """
+        # Process data to get input and target poses
+        input, target = self.process_data(data_batch, has_target_image=has_target_image, target_has_input=self.config.training.target_has_input, compute_rays=True)
+        
+        # Get input tokens
+        posed_images = self.get_posed_input(images=input.image, ray_o=input.ray_o, ray_d=input.ray_d)
+        bs, v_input, _, h, w = posed_images.size()
+        input_img_tokens = self.image_tokenizer(posed_images)
+        _, n_patches, d = input_img_tokens.size()
+        input_img_tokens = input_img_tokens.reshape(bs, v_input * n_patches, d)
+
+        # Get target pose info from the 'target' object
+        rendering_ray_o, rendering_ray_d = target.ray_o, target.ray_d
+        num_frames = rendering_ray_o.shape[1] # This is v_target
+        device = input.image.device
+
+        # Start the sampling loop
+        noisy_frames = torch.randn((bs, num_frames, 3, h, w), device=device)
+        self.scheduler.set_timesteps(self.config.diffusion.num_train_timesteps)
+        block_type = type(self.transformer_blocks[0])
+
+        for t in self.scheduler.timesteps:
+            print(f"Sampling timestep {t}/{self.scheduler.config.num_train_timesteps}", end='\r')
+            
+            # Get posed noisy frames and tokenize them
+            posed_noisy_frames = self.get_posed_input(images=noisy_frames, ray_o=rendering_ray_o, ray_d=rendering_ray_d)
+            target_tokens = self.image_tokenizer(posed_noisy_frames) # (b*v, p, d)
+            
+            # Get time embeddings
+            timesteps_tensor = torch.tensor([t] * target_tokens.shape[0], device=device)
+            # Fix for device mismatch
+            alphas = self.scheduler.alphas_cumprod[timesteps_tensor.to("cpu")].to(device).float().view(-1, 1)
+            time_proj_emb = self.time_proj(alphas)
+            time_emb = self.time_embedding(time_proj_emb).unsqueeze(1).expand(-1, n_patches, -1) # (b*v, p, d)
+            target_tokens_with_time = target_tokens + time_emb
+
+            # --- START FIX: Copied from forward_diffusion ---
+            if self.config.training.get("true_cross_attention", False):
+                target_tokens_with_time_flat = rearrange(target_tokens_with_time, '(b v) p d -> b (v p) d', b=bs)
+                transformer_input = torch.cat((input_img_tokens, target_tokens_with_time_flat), dim=1)
+            else:
+                repeated_input_img_tokens = repeat(input_img_tokens, 'b np d -> (b v_target) np d', v_target=num_frames)
+                transformer_input = torch.cat((repeated_input_img_tokens, target_tokens_with_time), dim=1)
+            
+            concat_img_tokens = self.transformer_input_layernorm(transformer_input)
+            
+            kwargs = {}
+            if block_type is AlternatingAttentionBlock:
+                kwargs = {'num_frames': v_input + num_frames}
+            elif block_type is SourceTargetAttentionBlock:
+                kwargs = {'source_token_len': v_input * n_patches}
+            # --- END FIX ---
+            
+            # Run transformer
+            transformer_output_tokens = self.pass_layers(concat_img_tokens, gradient_checkpoint=False, **kwargs)
+
+            # --- START FIX: Copied from forward_diffusion ---
+            if self.config.training.get("true_cross_attention", False):
+                _, predicted_noise_tokens = transformer_output_tokens.split([v_input * n_patches, num_frames * n_patches], dim=1)
+                predicted_noise_tokens = rearrange(predicted_noise_tokens, 'b (v p) d -> (b v) p d', v=num_frames)
+            else: 
+                _, predicted_noise_tokens = transformer_output_tokens.split([v_input * n_patches, n_patches], dim=1) # (b*v, p, d)
+            # --- END FIX ---
+
+            # Decode noise
+            predicted_noise_pixels = self.image_token_decoder(predicted_noise_tokens) # (b*v, p, p_pix*c)
+            patch_size = self.config.model.target_pose_tokenizer.patch_size
+            predicted_noise = rearrange(predicted_noise_pixels, "(b v) (h w) (p1 p2 c) -> b v c (h p1) (w p2)", b=bs, v=num_frames, h=h//patch_size, w=w//patch_size, p1=patch_size, p2=patch_size, c=3)
+            
+            # Scheduler step (handles full batch)
+            pred_noise_flat = rearrange(predicted_noise, "b v c h w -> (b v) c h w")
+            noisy_frames_flat = rearrange(noisy_frames, "b v c h w -> (b v) c h w")
+            
+            # This logic is correct since your config uses regular_mse
+            prev_sample_flat = self.scheduler.step(pred_noise_flat, t, noisy_frames_flat).prev_sample
+            noisy_frames = rearrange(prev_sample_flat, "(b v) c h w -> b v c h w", b=bs)
+            
+        print("\nBatch sampling complete.        ")
+        rendered_images = torch.clamp(noisy_frames, -1.0, 1.0) / 2.0 + 0.5
+        
+        # Return an edict, just like forward_direct, so export_results works
+        return edict(input=input, target=target, loss_metrics=None, render=rendered_images)
+
+
+
+
+    @torch.no_grad()
     def render_video_diffusion(self, data_batch, traj_type="interpolate", num_frames=60, loop_video=False, order_poses=False):
         """Renders a video using the DDPM sampling loop."""
         if not hasattr(data_batch, 'input') or data_batch.input is None:
@@ -459,7 +552,7 @@ class Images2LatentScene(nn.Module):
     @torch.no_grad()
     def load_ckpt(self, load_path):
         if os.path.isdir(load_path):
-            ckpt_names = [file_name for file_name in os.listdir(load_path) if file_name.endswith(".pt")]
+            ckpt_names = [file_name for file_name in os.listdir(load_path) if file_name.startswith("ckpt_") and file_name.endswith(".pt")]
             if not ckpt_names:
                 print(f"No .pt files found in directory {load_path}")
                 return None

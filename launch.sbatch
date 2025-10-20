@@ -4,7 +4,7 @@
 #SBATCH --mem=96G
 #SBATCH --mail-type=NONE
 #SBATCH --gres=gpu:a40:1
-#SBATCH --time=14-00:00:00
+#SBATCH --time=9-00:00:00
 #SBATCH --output=/home/stud/lavingal/storage/slurm/lavingal/run_reports/slurm-%j.out
 #SBATCH --error=/home/stud/lavingal/storage/slurm/lavingal/run_reports/slurm-%j.out
 
