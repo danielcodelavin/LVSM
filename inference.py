@@ -184,15 +184,15 @@ with torch.no_grad(), torch.autocast(
         need_target_images = config.inference.get("compute_metrics", False)
 
         # Dispatch to the correct inference function based on the config.
-        if config.training.get("use_diffusion", False):
-            # Pass the flag to sample_batch_diffusion
-            result = model.module.sample_batch_diffusion(batch, has_target_image=need_target_images)
-        else:
+       # if config.training.get("use_diffusion", False):
+       #     # Pass the flag to sample_with_exact_forward_loop
+       #     result = model.module.sample_with_exact_forward_loop(batch, has_target_image=need_target_images)
+       # else:
             # Pass the flag to the model's forward pass
-            result = model(batch, has_target_image=need_target_images)
+        #result = model(batch, has_target_image=need_target_images)
         
-        if config.inference.get("render_video", False):
-            result = model.module.render_video(result, **config.inference.render_video_config)
+        
+        result = model.module.render_video_diffusion(result, **config.inference.render_video_config)
         export_results(result, config.inference_out_dir, compute_metrics=config.inference.get("compute_metrics"))
     torch.cuda.empty_cache()
 
