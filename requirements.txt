@@ -21,3 +21,5 @@ lpips==0.1.4
 jaxtyping==0.3.1
 scikit-image==0.23.2 
 litdata==0.2.52
+yaml
+    

@@ -12,17 +12,21 @@ from utils.training_utils import create_optimizer, create_lr_scheduler, auto_res
 import random
 import litdata as ld
 import torch.profiler
+import torchvision.transforms.functional as TF
 
 
 
 
 class LitDataCollate:
     """
-    A robust collate function that filters each batch for valid samples
-    before performing view selection and stacking.
+    A robust collate function that filters each batch for valid samples,
+    performs view selection, resizes images to the target resolution,
+    and then stacks them into a final batch tensor.
     """
     def __init__(self, config):
         self.config = config
+        # Get the target image size from the model's config to avoid hardcoding.
+        self.target_size = self.config.model.image_tokenizer.image_size
 
     def __call__(self, batch):
         min_views_required = self.config.training.num_views
@@ -60,14 +64,30 @@ class LitDataCollate:
                 image_indices = random.sample(range(num_available_views), num_views_to_sample)
             
             for key, value in sample.items():
-                if isinstance(value, torch.Tensor):
+                if key == 'image':
+                   
+                    original_images = value[image_indices]
+                    
+                    # 2. Resize each selected image to the target size from the config.
+                    resized_images = torch.stack(
+                        [TF.resize(img, [self.target_size, self.target_size], antialias=True) for img in original_images]
+                    )
+                    
+                    
+                    processed_batch[key].append(resized_images)
+                  
+
+                elif isinstance(value, torch.Tensor):
+                    # For other tensors (like camera poses), just select the correct indices.
                     processed_batch[key].append(value[image_indices])
                 elif key == "scene_name":
+                    # For metadata like scene_name, just append it.
                     processed_batch[key].append(value)
         
         if not processed_batch.get("image"):
             return None
 
+        # Stack all samples into a single batch tensor.
         final_batch = {}
         for key, value_list in processed_batch.items():
             if value_list and isinstance(value_list[0], torch.Tensor):
@@ -75,7 +95,6 @@ class LitDataCollate:
             else:
                 final_batch[key] = value_list
         return final_batch
-
 
 class ViewManager:
     def __init__(self, config):
@@ -161,7 +180,7 @@ def analyze_flops(model, dataloader, config, ddp_info, amp_dtype_mapping):
 
 
 
-# --- Main Execution ---
+
 config = init_config()
 view_manager = ViewManager(config)
 os.environ["OMP_NUM_THREADS"] = str(config.training.get("num_threads", 1))

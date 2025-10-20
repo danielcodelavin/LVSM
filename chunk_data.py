@@ -29,8 +29,8 @@ def get_num_workers():
 if __name__ == '__main__':
     # --- Configuration ---
     CONFIG_FILE = "./configs/LVSM_object_decoder_only.yaml"
-    MASTER_LIST_FILE = "./datasets/objaverseplus_processed/full_list_processed.txt"
-    OUTPUT_CHUNK_DIR = "./datasets/objaverseplus_chunked"
+    MASTER_LIST_FILE = "./datasets/gso_rendered_processed/full_list_processed.txt"
+    OUTPUT_CHUNK_DIR = "./datasets/gso_chunked"
     
     
     BATCH_SIZE = 100
