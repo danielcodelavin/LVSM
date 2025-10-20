@@ -18,7 +18,7 @@ model:
     depth_init: true
     use_qk_norm: true
     ### CUSTOM
-    vggt_dual_attention: False
+    vggt_dual_attention: True
 
 diffusion:
   num_train_timesteps: 1000
@@ -37,7 +37,7 @@ training:
   allowed_gradnorm_factor: 5
   center_crop: true
   scene_scale_factor: 1.35
-  checkpoint_dir: ./newexperiments/checkpoints/model2_objadlvsm_cross
+  checkpoint_dir: ./newexperiments/checkpoints/model3_objadiffcrossvggt/ckpt_0000000000360000.pt
   checkpoint_every: 3000
   dataset_name: data.dataset_scene.Dataset
   #dataset_path: /storage/user/lavingal/objaverseplus_chunked
@@ -95,14 +95,14 @@ training:
   weight_decay: 0.05
 
 
-inference_out_dir: ./newexperiments/evaluation/diffusiontest_objalvsm/
+inference_out_dir: ./newexperiments/evaluation/diffusiontest_TWO_objalvsm/
 # inference / evaluation
 inference:
   if_inference: False
   compute_metrics: True
   view_idx_file_path: ./data/evaluation_index_re10k.json
-  render_video: False
-  inference_out_dir: ./newexperiments/evaluation/diffusiontest_objalvsm/
+  render_video: True
+  inference_out_dir: ./newexperiments/evaluation/diffusiontest_TWO_objalvsm/
   render_video_config:
     traj_type: interpolate
     num_frames: 60
