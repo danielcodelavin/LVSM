@@ -1,3 +1,10 @@
+"""
+Inference script with multi-step diffusion recycling
+Supports two schedules via command line:
+  --schedule fast    : 10 steps (10_steps_mixed baseline) - FAST
+  --schedule best    : 60 steps (60_ultra_high) - BEST QUALITY
+"""
+
 import importlib
 import os
 import time
@@ -14,9 +21,6 @@ from tqdm import tqdm
 import random
 from einops import rearrange, repeat
 from easydict import EasyDict as edict
-from PIL import Image, ImageDraw, ImageFont
-import numpy as np
-from diffusers import DDPMScheduler  # <--- IMPORT ADDED AS REQUESTED
 
 
 # Define the two recycling schedules
@@ -132,106 +136,6 @@ def print_rank0(message):
         print(message)
 
 
-def create_noise_diagnostic(model_module, batch, config, device, output_dir="noiseoutput"):
-    """
-    Create a diagnostic visualization showing a single image noised at different timesteps.
-    
-    Args:
-        model_module: The model (unwrapped if DDP)
-        batch: Current batch of data
-        config: Configuration object
-        device: Torch device
-        output_dir: Directory to save diagnostic images
-    """
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Get scene name
-    scene_names = batch.get('scene_name', ['unknown'])
-    scene_name = scene_names[0] if isinstance(scene_names, list) else 'unknown'
-    
-    # Pick a random target view from the first sample in batch
-    images = batch['image'][0]  # Shape: [num_views, C, H, W]
-    num_views = images.shape[0]
-    random_view_idx = random.randint(0, num_views - 1)
-    target_image_0_1 = images[random_view_idx:random_view_idx+1]  # Keep batch dim [1, C, H, W], range [0, 1]
-    
-    # --- MODIFICATION START ---
-    # Normalize image to [-1, 1] as expected by the scheduler
-    target_image_neg1_1 = (target_image_0_1 * 2.0 - 1.0).to(device)
-    
-    # Define noise levels (0 to 999 in steps of ~200)
-    noise_levels = [0, 200, 400, 600, 800, 999]
-    
-    # Store noised images
-    noised_images = []
-    
-    with torch.no_grad():
-        for timestep in noise_levels:
-            if timestep == 0:
-                # No noise at t=0
-                noised_img = target_image_neg1_1.clone()
-            else:
-                # Generate noise on the correct device
-                noise = torch.randn_like(target_image_neg1_1).to(device)
-                
-                # Create timesteps on CPU (as required by scheduler.add_noise to index alphas_cumprod)
-                timesteps = torch.full((target_image_neg1_1.shape[0],), timestep, device='cpu', dtype=torch.long)
-                
-                # Use the scheduler's add_noise method, just like in the training loop
-                noised_img = model_module.scheduler.add_noise(
-                    target_image_neg1_1, 
-                    noise, 
-                    timesteps
-                )
-            
-            noised_images.append(noised_img)
-    # --- MODIFICATION END ---
-            
-    # Convert to PIL images and create side-by-side visualization
-    pil_images = []
-    for img_tensor in noised_images:
-        # img_tensor is in [-1, 1] range
-        img_np = img_tensor[0].cpu().permute(1, 2, 0).numpy()
-        # Denormalize from [-1, 1] to [0, 255]
-        img_np = ((img_np + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
-        pil_images.append(Image.fromarray(img_np))
-    
-    # Create side-by-side image
-    img_width, img_height = pil_images[0].size
-    label_height = 30  # Height for text labels
-    total_width = img_width * len(noise_levels)
-    total_height = img_height + label_height
-    
-    combined_img = Image.new('RGB', (total_width, total_height), color='white')
-    draw = ImageDraw.Draw(combined_img)
-    
-    # Try to use a font, fallback to default if not available
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
-    except:
-        font = ImageFont.load_default()
-    
-    # Paste images and add labels
-    for idx, (pil_img, timestep) in enumerate(zip(pil_images, noise_levels)):
-        x_offset = idx * img_width
-        # Paste image
-        combined_img.paste(pil_img, (x_offset, label_height))
-        # Add label
-        label = f"t={timestep}"
-        # Get text bbox for centering
-        bbox = draw.textbbox((0, 0), label, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_x = x_offset + (img_width - text_width) // 2
-        draw.text((text_x, 5), label, fill='black', font=font)
-    
-    # Save the image
-    output_filename = f"{scene_name}_noise_diagnostic.png"
-    output_path = os.path.join(output_dir, output_filename)
-    combined_img.save(output_path)
-    print_rank0(f"Saved noise diagnostic: {output_path}")
-
-
 def denoise_single_step(model_module, input_img_tokens, target_data, timestep, config, device, n_patches, v_input, v_target, current_images):
     """Perform a single denoising step at the given timestep."""
     b = current_images.shape[0]
@@ -296,11 +200,8 @@ def denoise_single_step(model_module, input_img_tokens, target_data, timestep, c
     
     # Reconstruct x0
     current_images_flat = rearrange(current_images, "b v c h w -> (b v) c h w")
-   
-    
-    timesteps_cpu = torch.full((current_images_flat.shape[0],), timestep, device='cpu', dtype=torch.long)
-    alpha_prod_t = model_module.scheduler.alphas_cumprod[timesteps_cpu].to(device).float().view(-1, 1, 1, 1)
-    
+    timesteps = torch.full((current_images_flat.shape[0],), timestep, device=device, dtype=torch.long)
+    alpha_prod_t = model_module.scheduler.alphas_cumprod[timesteps].to(device).float().view(-1, 1, 1, 1)
     beta_prod_t = 1 - alpha_prod_t
     pred_x0 = (current_images_flat - beta_prod_t.sqrt() * predicted_noise) / alpha_prod_t.sqrt()
     
@@ -344,15 +245,10 @@ def run_inference_diffusion_multistep(model, batch, config, device, amp_dtype, t
     
     # Initialize at highest timestep
     first_timestep = timestep_schedule[0]
-    # Create timesteps on CPU for indexing
-    timesteps_cpu = torch.full((b * v_target,), first_timestep, device='cpu', dtype=torch.long)
-    
-    # Note: gt_images (x0) are normalized to [-1, 1]. Here we start from zeros.
+    timesteps = torch.full((b * v_target,), first_timestep, device=device, dtype=torch.long)
     zero_images = torch.zeros((b * v_target, 3, h, w), device=device)
     pure_noise_flat = rearrange(pure_noise, "b v c h w -> (b v) c h w")
-    
-    # Use scheduler.add_noise, which requires timesteps on CPU
-    current_images_flat = model_module.scheduler.add_noise(zero_images, pure_noise_flat, timesteps_cpu)
+    current_images_flat = model_module.scheduler.add_noise(zero_images, pure_noise_flat, timesteps)
     current_images = rearrange(current_images_flat, "(b v) c h w -> b v c h w", b=b, v=v_target)
     
     # Recycling loop - EXACTLY AS IN THE WORKING EXPERIMENT FILE
@@ -368,21 +264,17 @@ def run_inference_diffusion_multistep(model, batch, config, device, amp_dtype, t
             next_timestep = timestep_schedule[recycle_idx + 1]
             # Re-noise to next timestep
             denoised_flat = rearrange(denoised, "b v c h w -> (b v) c h w")
-            # Create timesteps on CPU for indexing
-            next_timesteps_cpu = torch.full((denoised_flat.shape[0],), next_timestep, device='cpu', dtype=torch.long)
+            next_timesteps = torch.full((denoised_flat.shape[0],), next_timestep, device=device, dtype=torch.long)
             noise_to_add = torch.randn_like(denoised_flat)
-            
-            # Use scheduler.add_noise, which requires timesteps on CPU
-            current_images_flat = model_module.scheduler.add_noise(denoised_flat, noise_to_add, next_timesteps_cpu)
+            current_images_flat = model_module.scheduler.add_noise(denoised_flat, noise_to_add, next_timesteps)
             current_images = rearrange(current_images_flat, "(b v) c h w -> b v c h w", b=b, v=v_target)
         else:
             current_images = denoised
     
    
-    # De-normalize from [-1, 1] to [0, 1]
     rendered_images = torch.clamp(current_images, -1.0, 1.0) / 2.0 + 0.5
     
-    # Compute metrics (expects [0, 1] range)
+    # Compute metrics
     loss_metrics = model_module.loss_computer(rendered_images, target_data.image)
     
     return edict(input=input_data, target=target_data, loss_metrics=loss_metrics, render=rendered_images)
@@ -421,14 +313,6 @@ def run_inference(config, model, dataloader, device, output_dir, schedule_name='
     total_samples = 0
     dataloader_iter = iter(dataloader)
     
-    # Check if diagnostic mode is enabled
-    diagnose_mode = True
-    diagnose_dir =  "noiseoutput/" if diagnose_mode else None
-    
-    if diagnose_mode and (not dist.is_initialized() or dist.get_rank() == 0):
-        os.makedirs(diagnose_dir, exist_ok=True)
-        print_rank0(f"Diagnostic mode enabled. Noise visualizations will be saved to: {diagnose_dir}")
-    
     
     with torch.no_grad():
        
@@ -447,11 +331,6 @@ def run_inference(config, model, dataloader, device, output_dir, schedule_name='
             # Move batch to device
             batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
                     for k, v in batch.items()}
-            
-            # Generate diagnostic noise visualization if enabled
-            if diagnose_mode and is_main:
-                model_module = model.module if isinstance(model, DDP) else model
-                create_noise_diagnostic(model_module, batch, config, device, diagnose_dir)
             
             # Forward pass with AMP
             with torch.autocast(enabled=use_amp, device_type="cuda", dtype=amp_dtype):
@@ -511,18 +390,17 @@ def run_inference(config, model, dataloader, device, output_dir, schedule_name='
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Run inference with diffusion recycling')
-    parser.add_argument('--schedule', type=str, default='best', choices=['fast', 'best', 'superlong_linear', 'superfast', 'linear_best', 'repeat_complete'],
+    parser.add_argument('--schedule', type=str, default='best', choices=['fast', 'superlong_linear', 'superlong_linear', 'superfast', 'linear_best', 'repeat_complete'],
                        help='Recycling schedule: fast (10 steps) or best (60 steps)')
-
     parser.add_argument('--config', type=str, default=None,
                        help='Path to config file (optional, uses default if not specified)')
-   
+    args, unknown = parser.parse_known_args()  # Allow other args to pass through to config
     
   
     config = init_config()
     
     
-    os.environ["OMP_NUM_THREADS"] = '2'
+    os.environ["OMP_NUM_THREADS"] = str(config.training.get("num_threads", 1))
     
    
     ddp_info = init_distributed(seed=777)
@@ -610,19 +488,19 @@ def main():
         dataloader=dataloader,
         device=ddp_info.device,
         output_dir=output_dir,
-        schedule_name='fast'
+        schedule_name=args.schedule
     )
     elapsed_time = time.time() - start_time
     
     print_rank0(f"\n{'='*70}")
     print_rank0(f"INFERENCE COMPLETED SUCCESSFULLY")
     print_rank0(f"{'='*70}")
-    print_rank0(f"Schedule used: FAST")
+    print_rank0(f"Schedule used: {SCHEDULES[args.schedule]['name']}")
     print_rank0(f"Total samples processed: {total_samples}")
     print_rank0(f"Total time: {elapsed_time:.2f}s ({elapsed_time/60:.2f}m)")
     print_rank0(f"Average time per sample: {elapsed_time/total_samples:.2f}s")
     print_rank0(f"Results saved to: {os.path.abspath(output_dir)}")
-   
+    print_rank0(f"{'='*70}\n")
     
     # Cleanup
     if dist.is_initialized():

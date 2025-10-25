@@ -29,9 +29,9 @@ diffusion:
 
 
 training:
-  amp_dtype: bf16
+  amp_dtype: f16
   api_key_path: ./configs/api_keys.yaml
-  batch_size_per_gpu: 32
+  batch_size_per_gpu: 8
   beta1: 0.9
   beta2: 0.95
   allowed_gradnorm_factor: 5
@@ -95,14 +95,14 @@ training:
   weight_decay: 0.05
 
 
-inference_out_dir: ./newexperiments/evaluation/diffusiontest_objalvsm/
+inference_out_dir: ./newexperiments/evaluation/final_base_diffusiontest_objalvsm/
 # inference / evaluation
 inference:
   if_inference: False
   compute_metrics: True
   view_idx_file_path: ./data/evaluation_index_re10k.json
   render_video: False
-  inference_out_dir: ./newexperiments/evaluation/diffusiontest_objalvsm/
+  inference_out_dir: ./newexperiments/evaluation/final_base_diffusiontest_objalvsm/
   render_video_config:
     traj_type: interpolate
     num_frames: 60

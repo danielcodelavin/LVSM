@@ -145,3 +145,6 @@ dmypy.json
 /custom/objaverse_sample
 /custom/rendered_videos
 /newexperiments
+/experiment_recycling_results
+/test_output
+/noiseoutput
