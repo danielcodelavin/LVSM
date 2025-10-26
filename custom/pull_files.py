@@ -1,9 +1,3 @@
-# Usage
-#     python3 download_collection.py -o <collection_owner> -c <collection_name>
-#
-# Description
-#     This script will download all models contained within a collection.
-#
 import sys,json,requests
 import getopt
 
@@ -38,36 +32,34 @@ print("Downloading models from the {}/{} collection.".format(owner_name, collect
 page = 1
 count = 0
 
-# The Fuel server URL.
+
 base_url ='https://fuel.gazebosim.org/'
 
-# Fuel server version.
-fuel_version = '1.0'
 
-# Path to get the models in the collection
+fuel_version = '1.0'
 next_url = '/models?page={}&per_page=100&q=collections:{}'.format(page,collection_name)
 
-# Path to download a single model in the collection
+
 download_url = base_url + fuel_version + '/{}/models/'.format(owner_name)
 
-# Iterate over the pages
+
 while True:
     url = base_url + fuel_version + next_url
 
-    # Get the contents of the current page.
+   
     r = requests.get(url)
 
     if not r or not r.text:
         break
 
-    # Convert to JSON
+   
     models = json.loads(r.text)
 
-    # Compute the next page's URL
+  
     page = page + 1
     next_url = '/models?page={}&per_page=100&q=collections:{}'.format(page,collection_name)
   
-    # Download each model 
+    
     for model in models:
         count+=1
         model_name = model['name']

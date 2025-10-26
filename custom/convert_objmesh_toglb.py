@@ -1,21 +1,15 @@
-# simple_converter.py (Version 6 - Final)
-#
-# This script rebuilds materials from scratch to solve the relative path
-# issue and includes the fix for the "name 'Vector' is not defined" error.
-#
-
 import bpy
 import os
 import sys
 import glob
-from mathutils import Vector  # <-- THE CRITICAL FIX IS HERE
+from mathutils import Vector  
 
-# --- CONFIGURE YOUR PATHS HERE ---
+
 INPUT_DIRECTORY = "/home/stud/lavingal/storage/slurm/lavingal/LVSM/datasets/reorganized_gso"
 OUTPUT_DIRECTORY = "/home/stud/lavingal/storage/slurm/lavingal/LVSM/datasets/converted_glb_gso"
 
 
-# --- SCRIPT LOGIC ---
+
 
 def clean_scene():
     """Clears all mesh objects from the scene."""
@@ -40,7 +34,7 @@ def rebuild_materials(object_dir):
     """
     print("  Rebuilding materials from scratch...")
 
-    # Find the texture file in the correct subdirectory
+   
     texture_path = None
     texture_dir = os.path.join(object_dir, 'materials', 'textures')
     if os.path.isdir(texture_dir):
@@ -57,7 +51,7 @@ def rebuild_materials(object_dir):
         print("    - No 'materials/textures' directory found.")
         return
 
-    # Process every mesh object in the scene
+    
     for obj in bpy.context.scene.objects:
         if obj.type != 'MESH':
             continue

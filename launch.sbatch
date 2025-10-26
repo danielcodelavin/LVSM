@@ -19,4 +19,4 @@ echo "SLURM JOB: Python path: $(which python)"
 echo "========================================="
 
 
-torchrun --nproc_per_node 1 --nnodes 1 --rdzv_id 109 --rdzv_backend c10d  train.py --config configs/model_4.yaml
+torchrun --nproc_per_node 1 --nnodes 1 --rdzv_id 105 --rdzv_backend c10d  train.py --config configs/model_4.yaml

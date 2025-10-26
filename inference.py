@@ -10,6 +10,8 @@ import litdata as ld
 import random
 import torchvision.transforms.functional as TF
 
+
+
 # Load config and read(override) arguments from CLI
 config = init_config()
 
@@ -155,7 +157,7 @@ model.module.load_ckpt(config.training.checkpoint_dir)
 
 
 if ddp_info.is_main_process:
-    print(f"Running inference; save results to: {config.inference_out_dir}")
+    #print(f"Running inference; save results to: {config.inference_out_dir}")
     # avoid multiple processes downloading LPIPS at the same time
     import lpips
     # Suppress the warning by setting weights_only=True
@@ -183,19 +185,13 @@ with torch.no_grad(), torch.autocast(
         
         need_target_images = config.inference.get("compute_metrics", False)
 
-        # Dispatch to the correct inference function based on the config.
-       # if config.training.get("use_diffusion", False):
-       #     # Pass the flag to sample_with_exact_forward_loop
-       #     result = model.module.sample_with_exact_forward_loop(batch, has_target_image=need_target_images)
-       # else:
-            # Pass the flag to the model's forward pass
-        #result = model(batch, has_target_image=need_target_images)
+        result = model(batch)
+      
         
-        
-        result = model.module.render_video_diffusion(result, **config.inference.render_video_config)
-        export_results(result, config.inference_out_dir, compute_metrics=config.inference.get("compute_metrics"))
+        #result = model.module.render_video_diffusion(result, **config.inference.render_video_config)
+        export_results(result, config.inference_out_dir, compute_metrics=True)
     torch.cuda.empty_cache()
-
+    summarize_evaluation(config.inference_out_dir)
 
 dist.barrier()
 

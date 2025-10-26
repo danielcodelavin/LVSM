@@ -4,10 +4,6 @@ from tqdm import tqdm
 import os
 
 def analyze_dataset(list_file_path):
-    """
-    Analyzes a dataset by reading a list of scene JSON files,
-    counting the frames in each, and reporting statistics.
-    """
     print(f"Reading scene list from: {list_file_path}")
 
     if not os.path.exists(list_file_path):
@@ -32,7 +28,6 @@ def analyze_dataset(list_file_path):
                 if "frames" in data and isinstance(data["frames"], list):
                     frame_counts.append(len(data["frames"]))
         except Exception as e:
-            # This will skip any corrupted or unreadable files but continue analysis
             print(f"\nWarning: Could not process file {scene_path}. Error: {e}")
             continue
 
@@ -40,7 +35,6 @@ def analyze_dataset(list_file_path):
         print("Could not extract any frame counts from the dataset.")
         return
 
-    # --- Calculate and Print Statistics ---
     frame_counts_np = np.array(frame_counts)
     
     total_scenes_processed = len(frame_counts_np)
@@ -65,7 +59,6 @@ def analyze_dataset(list_file_path):
 
 
 if __name__ == "__main__":
-    # --- HARDCODE THE PATH TO YOUR LIST FILE HERE ---
     LIST_FILE_PATH = "/storage/slurm/lavingal/lavingal/LVSM/datasets/re10k/train/full_list.txt"
     
     analyze_dataset(LIST_FILE_PATH)

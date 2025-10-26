@@ -57,7 +57,7 @@ def analyze_dataset_sample(dataset_path: str):
         # Calculate what the size would be if it were uint8
         equivalent_uint8_size_mb = total_elements * 1 / (1024 * 1024)
 
-        print(f"✅ [bold green]Hypothesis CONFIRMED.[/bold green]")
+        print(f"[bold green]Hypothesis CONFIRMED.[/bold green]")
         print(f"The data type is [bold magenta]torch.float32[/bold magenta], which uses [bold]{element_size_bytes} bytes[/bold] per value.")
         print(f"Total size of this tensor in memory: [bold cyan]{size_in_memory_mb:.2f} MB[/bold cyan]")
         print(f"Equivalent size if stored as uint8 (1 byte/value): [cyan]{equivalent_uint8_size_mb:.2f} MB[/cyan]")
@@ -65,7 +65,7 @@ def analyze_dataset_sample(dataset_path: str):
         print(f"Size Ratio (float32 / uint8): [bold yellow]{size_in_memory_mb / equivalent_uint8_size_mb:.1f}x[/bold yellow]")
 
     else:
-        print(f"❌ [bold yellow]Hypothesis NOT confirmed.[/bold yellow]")
+       
         print(f"The data type is [bold magenta]{image_tensor.dtype}[/bold magenta], not torch.float32.")
 
 

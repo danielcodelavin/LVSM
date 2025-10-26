@@ -2,11 +2,7 @@ import os
 import zipfile
 
 def unzip_to_named_folder_and_delete(target_dir):
-    """
-    Unzips all zip files in a directory. For each zip, it creates a new folder
-    named after the zip file and extracts the contents there. The original zip
-    file is deleted afterwards.
-    """
+   
     if not os.path.isdir(target_dir):
         print(f"Error: Directory not found at {target_dir}")
         return
@@ -15,19 +11,19 @@ def unzip_to_named_folder_and_delete(target_dir):
         if file.endswith(".zip"):
             zip_path = os.path.join(target_dir, file)
             
-            # Create a directory name from the zip file name (e.g., "my_archive.zip" -> "my_archive")
+          
             output_dir_name = os.path.splitext(file)[0]
             output_dir_path = os.path.join(target_dir, output_dir_name)
             
             try:
-                # Create the new directory
+              
                 os.makedirs(output_dir_path, exist_ok=True)
                 
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    # Extract contents into the newly created directory
+                  
                     zip_ref.extractall(output_dir_path)
                 
-                # Delete the original zip file
+              
                 os.remove(zip_path)
                 print(f"Unzipped '{zip_path}' to '{output_dir_path}' and deleted original.")
 

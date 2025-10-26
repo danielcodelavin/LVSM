@@ -360,7 +360,29 @@ def run_inference(config, model, dataloader, device, output_dir, schedule_name='
                     order_poses=render_config.get("order_poses", False)
                 )
             
-            # Export results
+            if result.render.shape[1] == 1:
+                
+               
+                if compute_metrics and 'loss_metrics' in result:
+                    for key in result.loss_metrics.keys():
+                        val = result.loss_metrics[key]
+                        
+                        if isinstance(val, torch.Tensor) and val.dim() == 0:
+                           
+                            result.loss_metrics[key] = torch.stack([val, val])
+
+                
+                result.render = torch.cat([result.render, result.render], dim=1)
+
+              
+                for key in result.target.keys():
+                    val = result.target[key]
+                   
+                    if isinstance(val, torch.Tensor) and val.dim() > 1 and val.shape[1] == 1:
+                     
+                        result.target[key] = torch.cat([val, val], dim=1)
+
+            
             export_results(
                 result,
                 output_dir,

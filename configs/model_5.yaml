@@ -36,10 +36,10 @@ training:
   allowed_gradnorm_factor: 5
   center_crop: true
   scene_scale_factor: 1.35
-  checkpoint_dir: ./newexperiments/checkpoints/model5_flexLVSM_crossattention_350k
+  checkpoint_dir: /storage/slurm/lavingal/lavingal/LVSM/newexperiments/checkpoints/model5_flexLVSM_crossattention_350k/ckpt_0000000000210000.pt
   checkpoint_every: 3000
   dataset_name: data.dataset_scene.Dataset
-  dataset_path: /storage/user/lavingal/objaverseplus_chunked
+  dataset_path: /storage/slurm/lavingal/lavingal/LVSM/datasets/gso_chunked
   grad_accum_steps: 4
   grad_checkpoint_every: 1
   grad_clip_norm: 1.0
@@ -93,8 +93,10 @@ training:
 
 
 # inference / evaluation
+inference_out_dir: ./newexperiments/evaluation/model5_objalvsm/
 inference:
   if_inference: False
+  inference_out_dir: ./newexperiments/evaluation/model5_objalvsm/
   compute_metrics: False
   view_idx_file_path: ./data/evaluation_index_re10k.json
   render_video: False

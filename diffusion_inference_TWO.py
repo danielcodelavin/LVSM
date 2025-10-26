@@ -23,7 +23,7 @@ from einops import rearrange, repeat
 from easydict import EasyDict as edict
 
 
-# Define the two recycling schedules
+
 SCHEDULES = {
     'fast': {
         'name': '10_steps_mixed',
